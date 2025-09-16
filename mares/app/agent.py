@@ -118,16 +118,8 @@ def create_analyst_agent():
     - Confirm all checklist items are addressed
     - Provide a validated summary of the requirements
     
-    OUTPUT FORMAT (STRICT JSON):
-    You MUST respond with one of these two JSON structures:
-    
-    For incomplete briefs:
-    {"status": "INCOMPLETE", "questions": ["Question 1?", "Question 2?", ...]}
-    
-    For complete briefs:
-    {"status": "COMPLETE", "validated_brief": "A comprehensive summary of all validated requirements..."}
-    
-    Respond ONLY with valid JSON. No additional text or explanation outside the JSON structure."""
+    while the brief is incomplete ask the user to answer every queystion until the brief is complete.
+    """
 
     return LlmAgent(
         name="BusinessAnalyst",
