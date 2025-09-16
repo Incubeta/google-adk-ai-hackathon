@@ -2,9 +2,9 @@ from google.adk.tools.application_integration_tool.application_integration_tools
     ApplicationIntegrationToolset,
 )
 
-google_drive_tool = ApplicationIntegrationToolset(
+google_drive_toolset = ApplicationIntegrationToolset(
     project="qwiklabs-gcp-02-fdeb79e5d8e5",
-    location="eu-west1",  # TODO: replace with location of the connection
+    location="europe-west1",  # TODO: replace with location of the connection
     connection="google-drive-connector",  # TODO: replace with connection name
     entity_operations={
         "Docs": [],
@@ -13,9 +13,6 @@ google_drive_tool = ApplicationIntegrationToolset(
         "Folders": [],
     },
     actions=["CreateFolder"],
-    service_account_json="{...}",  # optional. Stringified json for service account key
-    tool_name_prefix="tool_prefix2",
-    tool_instructions="...",
 )
 
 """Available Actions:

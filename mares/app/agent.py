@@ -19,6 +19,8 @@ import google.auth
 from google.adk.agents import LlmAgent, SequentialAgent, BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
+from .google_docs_connector import google_docs_toolset
+from .google_drive_connector import google_drive_toolset
 
 _, project_id = google.auth.default()
 os.environ.setdefault("GOOGLE_CLOUD_PROJECT", project_id)
@@ -35,10 +37,12 @@ class AnalystValidationAgent(BaseAgent):
     def __init__(self):
         super().__init__(
             name="AnalystValidator",
-            description="Validates analyst output and determines if brief is complete"
+            description="Validates analyst output and determines if brief is complete",
         )
 
-    async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
         """Check if analyst marked the brief as complete."""
         # Get the analyst's response from state
         analyst_response = ctx.session.state.get("analyst_output", "{}")
@@ -57,7 +61,7 @@ class AnalystValidationAgent(BaseAgent):
                 yield Event(
                     author=self.name,
                     content=f"✅ Brief validation complete",
-                    actions=EventActions(escalate=True)
+                    actions=EventActions(escalate=True),
                 )
             elif status == "INCOMPLETE":
                 # Extract questions and save to state for user interaction
@@ -68,18 +72,20 @@ class AnalystValidationAgent(BaseAgent):
                 yield Event(
                     author=self.name,
                     content=f"❗ Additional information needed: {
-                        len(questions)} questions"
+                        len(questions)
+                    } questions",
                 )
             else:
                 yield Event(
                     author=self.name,
                     content=f"❌ Error in analyst response: {
-                        response_data.get('error', 'Unknown error')}"
+                        response_data.get('error', 'Unknown error')
+                    }",
                 )
         except json.JSONDecodeError as e:
             yield Event(
                 author=self.name,
-                content=f"❌ Failed to parse analyst response: {str(e)}"
+                content=f"❌ Failed to parse analyst response: {str(e)}",
             )
 
 
@@ -127,7 +133,7 @@ def create_analyst_agent():
         model="gemini-2.5-pro",
         instruction=instruction,
         description="Analyzes project briefs and identifies ambiguities",
-        output_key="analyst_output"  # Saves output to state['analyst_output']
+        output_key="analyst_output",  # Saves output to state['analyst_output']
     )
 
 
@@ -177,7 +183,7 @@ def create_scripter_agent():
         instruction=instruction,
         description="Generates user stories and acceptance criteria from validated requirements",
         # Saves output to state['stories_and_criteria']
-        output_key="stories_and_criteria"
+        output_key="stories_and_criteria",
     )
 
 
@@ -230,7 +236,7 @@ def create_estimator_agent():
         model="gemini-2.5-pro",
         instruction=instruction,
         description="Provides Story Point estimates for user stories",
-        output_key="estimations"  # Saves output to state['estimations']
+        output_key="estimations",  # Saves output to state['estimations']
     )
 
 
@@ -265,14 +271,17 @@ def create_report_generator_agent():
     ## 4. Implementation Recommendations
     Based on the analysis, provide key recommendations for the development team.
     
-    Make the report professional, clear, and ready for stakeholder review."""
+    Make the report professional, clear, and ready for stakeholder review.
+    And Save it to Google Drive with the tools supplied to you - using Google Docs.
+    """
 
     return LlmAgent(
         name="ReportGenerator",
         model="gemini-2.5-pro",
         instruction=instruction,
         description="Compiles all artifacts into a final report",
-        output_key="final_report"
+        output_key="final_report",
+        tools=[google_docs_toolset, google_drive_toolset],
     )
 
 
@@ -287,7 +296,7 @@ class InitializeBriefAgent(LlmAgent):
             name="BriefInitializer",
             description="Extracts and saves the project brief from user input",
             instruction="Get the project_brief from the user and store it in the state so it can be used by  the next agent",
-            output_key="project_brief"
+            output_key="project_brief",
         )
 
 
@@ -314,12 +323,12 @@ def create_mares_coordinator():
         description="Main MARES workflow pipeline",
         sub_agents=[
             initializer,  # Step 0: Initialize the brief in state
-            analyst,      # Step 1: Analyze and validate requirements
-            validator,    # Step 2: Check if validation is complete
-            scripter,     # Step 3: Generate user stories and acceptance criteria
-            estimator,    # Step 4: Estimate story points
-            report_generator  # Step 5: Generate final report
-        ]
+            analyst,  # Step 1: Analyze and validate requirements
+            validator,  # Step 2: Check if validation is complete
+            scripter,  # Step 3: Generate user stories and acceptance criteria
+            estimator,  # Step 4: Estimate story points
+            report_generator,  # Step 5: Generate final report
+        ],
     )
 
     # Create the coordinator agent that manages the overall process
@@ -348,7 +357,7 @@ def create_mares_coordinator():
         model="gemini-2.0-flash",
         instruction=coordinator_instruction,
         description="Orchestrates the MARES requirements analysis process",
-        sub_agents=[main_pipeline]  # Pipeline is a sub-agent of coordinator
+        sub_agents=[main_pipeline],  # Pipeline is a sub-agent of coordinator
     )
 
     return coordinator
