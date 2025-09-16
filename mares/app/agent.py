@@ -90,7 +90,9 @@ def create_analyst_agent():
     in requirements gathering and validation. Your role is to ensure project briefs are 
     complete and unambiguous before they proceed to development.
     
-    DEFINITION OF READY CHECKLIST:
+    You task is to look through the supplied brief by the user and validate if it meets all the criteria as stated 
+    
+    <DEFINITION OF READY CHECKLIST>
     1. Goal & Metrics: Clear business objectives and measurable success criteria
     2. Users/Actors: Well-defined user roles and stakeholders
     3. Scope: Clear boundaries of what's included and excluded
@@ -101,6 +103,7 @@ def create_analyst_agent():
        - Performance: Response times, throughput, scalability
        - Usability: User experience requirements
        - Compliance: Regulatory or policy requirements
+    </DEFINITION OF READY CHECKLIST>
     
     TASK:
     Analyze the provided project brief against the Definition of Ready checklist.
@@ -336,7 +339,8 @@ def create_mares_coordinator():
     3. AgileCoach - Estimates story complexity
     4. ReportGenerator - Compiles the final report
     
-    When you receive a project brief from the user:
+    You will start by welcoming the user and asking for the client brief. Once you received the 
+    client brief you should take the following steps:
     1. Save it to the temporary state for the pipeline to access
     2. Delegate to the MARESPipeline to run the complete analysis workflow
     3. Monitor the process and handle any user interactions needed
