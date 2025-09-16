@@ -86,7 +86,8 @@ class AnalystValidationAgent(BaseAgent):
 # Define the three main agents using LlmAgent
 def create_analyst_agent():
     """Create the Business Analyst agent."""
-    instruction = """You are an expert, skeptical Senior Business Analyst with 15+ years of experience 
+    instruction = """
+    You are an expert, skeptical Senior Business Analyst with 15+ years of experience 
     in requirements gathering and validation. Your role is to ensure project briefs are 
     complete and unambiguous before they proceed to development.
     
@@ -123,7 +124,7 @@ def create_analyst_agent():
 
     return LlmAgent(
         name="BusinessAnalyst",
-        model="gemini-2.0-flash",
+        model="gemini-2.5-pro",
         instruction=instruction,
         description="Analyzes project briefs and identifies ambiguities",
         output_key="analyst_output"  # Saves output to state['analyst_output']
@@ -172,7 +173,7 @@ def create_scripter_agent():
 
     return LlmAgent(
         name="ProductOwner",
-        model="gemini-2.0-flash",
+        model="gemini-2.5-pro",
         instruction=instruction,
         description="Generates user stories and acceptance criteria from validated requirements",
         # Saves output to state['stories_and_criteria']
@@ -226,7 +227,7 @@ def create_estimator_agent():
 
     return LlmAgent(
         name="AgileCoach",
-        model="gemini-2.0-flash",
+        model="gemini-2.5-pro",
         instruction=instruction,
         description="Provides Story Point estimates for user stories",
         output_key="estimations"  # Saves output to state['estimations']
@@ -268,7 +269,7 @@ def create_report_generator_agent():
 
     return LlmAgent(
         name="ReportGenerator",
-        model="gemini-2.0-flash",
+        model="gemini-2.5-pro",
         instruction=instruction,
         description="Compiles all artifacts into a final report",
         output_key="final_report"
