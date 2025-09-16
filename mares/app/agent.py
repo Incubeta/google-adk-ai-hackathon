@@ -31,28 +31,28 @@ class AnalystValidationAgent(BaseAgent):
     Custom agent that checks if the analyst's output indicates completion
     and processes the validation result.
     """
-    
+
     def __init__(self):
         super().__init__(
             name="AnalystValidator",
             description="Validates analyst output and determines if brief is complete"
         )
-    
+
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         """Check if analyst marked the brief as complete."""
         # Get the analyst's response from state
         analyst_response = ctx.session.state.get("analyst_output", "{}")
-        
+
         try:
             response_data = json.loads(analyst_response)
             status = response_data.get("status", "ERROR")
-            
+
             if status == "COMPLETE":
                 # Save the validated brief to state
                 validated_brief = response_data.get("validated_brief", "")
                 ctx.session.state["validated_brief"] = validated_brief
                 ctx.session.state["analysis_complete"] = True
-                
+
                 # Escalate to exit the loop
                 yield Event(
                     author=self.name,
@@ -64,15 +64,17 @@ class AnalystValidationAgent(BaseAgent):
                 questions = response_data.get("questions", [])
                 ctx.session.state["pending_questions"] = questions
                 ctx.session.state["analysis_complete"] = False
-                
+
                 yield Event(
                     author=self.name,
-                    content=f"❗ Additional information needed: {len(questions)} questions"
+                    content=f"❗ Additional information needed: {
+                        len(questions)} questions"
                 )
             else:
                 yield Event(
                     author=self.name,
-                    content=f"❌ Error in analyst response: {response_data.get('error', 'Unknown error')}"
+                    content=f"❌ Error in analyst response: {
+                        response_data.get('error', 'Unknown error')}"
                 )
         except json.JSONDecodeError as e:
             yield Event(
@@ -102,7 +104,7 @@ def create_analyst_agent():
     
     TASK:
     Analyze the provided project brief against the Definition of Ready checklist.
-    The brief is in {project_brief} and any conversation history is in {conversation_history}.
+    The brief is in {project_brief} 
     
     If the brief is INCOMPLETE:
     - Identify specific gaps and ambiguities
@@ -123,7 +125,7 @@ def create_analyst_agent():
     {"status": "COMPLETE", "validated_brief": "A comprehensive summary of all validated requirements..."}
     
     Respond ONLY with valid JSON. No additional text or explanation outside the JSON structure."""
-    
+
     return LlmAgent(
         name="BusinessAnalyst",
         model="gemini-2.0-flash",
@@ -172,13 +174,14 @@ def create_scripter_agent():
     - Maintain consistency in terminology
     - Focus on testable, measurable criteria
     - Consider both happy path and edge cases"""
-    
+
     return LlmAgent(
         name="ProductOwner",
         model="gemini-2.0-flash",
         instruction=instruction,
         description="Generates user stories and acceptance criteria from validated requirements",
-        output_key="stories_and_criteria"  # Saves output to state['stories_and_criteria']
+        # Saves output to state['stories_and_criteria']
+        output_key="stories_and_criteria"
     )
 
 
@@ -225,7 +228,7 @@ def create_estimator_agent():
     - Consider all complexity factors, not just development time
     - Provide clear, concise justifications
     - If a story seems larger than 13 points, note it should be decomposed"""
-    
+
     return LlmAgent(
         name="AgileCoach",
         model="gemini-2.0-flash",
@@ -267,7 +270,7 @@ def create_report_generator_agent():
     Based on the analysis, provide key recommendations for the development team.
     
     Make the report professional, clear, and ready for stakeholder review."""
-    
+
     return LlmAgent(
         name="ReportGenerator",
         model="gemini-2.0-flash",
@@ -277,36 +280,18 @@ def create_report_generator_agent():
     )
 
 
-class InitializeBriefAgent(BaseAgent):
+class InitializeBriefAgent(LlmAgent):
     """
     Custom agent that initializes the project brief in the state
     from the user's message.
     """
-    
+
     def __init__(self):
         super().__init__(
             name="BriefInitializer",
-            description="Extracts and saves the project brief from user input"
-        )
-    
-    async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
-        """Extract the project brief from the user message and save to state."""
-        user_message = ctx.state().get("user_message") or ""
-        
-        # Extract the brief (in a real scenario, you might parse it more intelligently)
-        # For now, we'll assume the entire message after "analyze:" is the brief
-        if "analyze:" in user_message.lower():
-            brief = user_message.split("analyze:", 1)[1].strip()
-        else:
-            brief = user_message
-        
-        # Save to temporary state for this turn
-        ctx.session.state["temp:project_brief"] = brief
-        ctx.session.state["temp:conversation_history"] = "No previous conversation"
-        
-        yield Event(
-            author=self.name,
-            content=f"📋 Project brief initialized with {len(brief)} characters"
+            description="Extracts and saves the project brief from user input",
+            instruction="Get the project_brief from the user and store it in the state so it can be used by  the next agent",
+            output_key="project_brief"
         )
 
 
@@ -316,17 +301,17 @@ def create_mares_coordinator():
     Create the main MARES coordinator agent using ADK's multi-agent patterns.
     This implements the Sequential Pipeline Pattern with all three specialist agents.
     """
-    
+
     # Create the initialization agent
     initializer = InitializeBriefAgent()
-    
+
     # Create the specialist agents
     analyst = create_analyst_agent()
     scripter = create_scripter_agent()
     estimator = create_estimator_agent()
     report_generator = create_report_generator_agent()
     validator = AnalystValidationAgent()
-    
+
     # Create the main sequential pipeline
     main_pipeline = SequentialAgent(
         name="MARESPipeline",
@@ -340,7 +325,7 @@ def create_mares_coordinator():
             report_generator  # Step 5: Generate final report
         ]
     )
-    
+
     # Create the coordinator agent that manages the overall process
     coordinator_instruction = """You are the MARES Project Coordinator, managing a team of specialist agents
     to analyze software requirements and generate development artifacts.
@@ -360,7 +345,7 @@ def create_mares_coordinator():
     
     
     Extract the project brief from the user's message and save it to temp:project_brief, then transfer to MARESPipeline."""
-    
+
     coordinator = LlmAgent(
         name="MARESCoordinator",
         model="gemini-2.0-flash",
@@ -368,55 +353,9 @@ def create_mares_coordinator():
         description="Orchestrates the MARES requirements analysis process",
         sub_agents=[main_pipeline]  # Pipeline is a sub-agent of coordinator
     )
-    
+
     return coordinator
 
 
 # Main entry point - create the root agent
 root_agent = create_mares_coordinator()
-
-
-# Helper function to run the MARES process
-async def run_mares_analysis(project_brief: str):
-    """
-    Run the MARES analysis process on a project brief.
-    
-    Args:
-        project_brief: The initial project brief to analyze
-        
-    Returns:
-        The final report as a string
-    """
-    from google.adk.agents.invocation_context import InvocationContext
-    from google.adk.sessions import Session
-    
-    # Create a session for the analysis
-    session = Session()
-    
-    # Initialize the state with the project brief
-    session.state["project_brief"] = project_brief
-    session.state["conversation_history"] = ""
-    
-    # Create invocation context
-    context = InvocationContext(
-        session=session,
-        user_message=f"Analyze this project brief: {project_brief}"
-    )
-    
-    # Run the coordinator agent
-    async for event in root_agent.run_async(context):
-        # Handle events as they come in
-        if event.author == "AnalystValidator" and not session.state.get("analysis_complete", False):
-            # Handle questions from analyst
-            questions = session.state.get("pending_questions", [])
-            if questions:
-                print("❗ Analyst needs clarification:")
-                for i, q in enumerate(questions, 1):
-                    print(f"  {i}. {q}")
-                
-                # In a real implementation, you would collect user responses here
-                # For now, we'll just note that interaction is needed
-                print("\n(User interaction would happen here to answer questions)")
-    
-    # Return the final report
-    return session.state.get("final_report", "Report generation failed")
