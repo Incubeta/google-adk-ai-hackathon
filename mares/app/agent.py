@@ -110,16 +110,8 @@ def create_analyst_agent():
     Analyze the provided project brief against the Definition of Ready checklist.
     The brief is in {project_brief} 
 
-    If the brief is INCOMPLETE: 
-    - ask for the first point of additional information.
-    - Update the {project_brief}
-    - Rerun the task until the brief is comeplete.
-
-    If the brief is COMPLETE:
-    - Confirm all checklist items are addressed
-    - Provide a validated summary of the requirements
-
-    while the brief is incomplete ask the user to answer every question until the brief is complete.
+    When you have gathered all the missing elements of the brief, you summarize you findings towards the user
+    and then hand back over to the coordinator to dispatch to the next agent.
     """
 
     return LlmAgent(
@@ -127,20 +119,57 @@ def create_analyst_agent():
         model="gemini-2.5-pro",
         instruction=instruction,
         description="Analyzes project briefs and identifies ambiguities",
+        output_key="missing_elements"  # Saves output to state['missing_elements']
+    )
+
+def create_refinement_agent():
+    """Create the Brief Refinement agent."""
+    instruction ="""
+    You are an expert, skeptical, but friendly product owner. Your task is to look at the first point of the 
+    {missing_elements} and ask the user for refinement input. DO NOT apply refinements themselves, it is something 
+    that the user should input. DO NOT ask which point to tackle first, just start with what is at the top of the list.
+    
+    IF that is done correctly, you update the {project_brief} with the refinement that was inputted buy the user and update the {missing_elements} 
+    list, by taking off the point you covered. Then you revert the user back to the create_refinement_validator_agent agent.
+    """
+
+    return LlmAgent(
+        name="RefinementAgent",
+        model="gemini-2.5-pro",
+        instruction=instruction,
+        description="Gathers additional information to update the brief.",
         output_key="analyst_output"  # Saves output to state['analyst_output']
     )
 
+refinement = create_refinement_agent()
 
-analyst = create_analyst_agent()
+def create_refinement_validator_agent():
+    """Create the Brief Refinement validator agent."""
+    instruction = """
+    You are an expert product owner. Your task is to look that the {missing_elements} to see if there is still 
+    anything on there. 
+    
+    IF there are still elements on the {missing_elements} list you say "Next point" and revert the user to the refinement dub-agent.
+    
+    IF all point have been covered, you revert the user back to the coordinator to dispatch to the next agent.
+    """
 
-
-def create_refinement_loop_agent():
-    return LoopAgent(
-        name="RefinementLoop",
-        # Agent order is crucial: Critique first, then Refine/Exit
-        sub_agents=[analyst],
-        max_iterations=10  # Limit loops
+    return LlmAgent(
+        name="RefinementsValidationAgent",
+        model="gemini-2.5-flash",
+        instruction=instruction,
+        description="Checks if all missing elements have been dealt with.",
+        sub_agents=[refinement],
+        output_key="analyst_output"  # Saves output to state['analyst_output']
     )
+
+# def create_refinement_loop_agent():
+#     return LoopAgent(
+#         name="RefinementLoop",
+#         # Agent order is crucial: Critique first, then Refine/Exit
+#         sub_agents=[refinement],
+#         max_iterations=10  # Limit loops
+#     )
 
 
 def create_scripter_agent():
@@ -314,7 +343,9 @@ def create_mares_coordinator():
     initializer = InitializeBriefAgent()
 
     # Create the specialist agents
-    RefinementLoop = create_refinement_loop_agent()
+        # RefinementLoop = create_refinement_loop_agent()
+    analyst = create_analyst_agent()
+    refinement_validator = create_refinement_validator_agent()
     scripter = create_scripter_agent()
     estimator = create_estimator_agent()
     report_generator = create_report_generator_agent()
@@ -326,11 +357,12 @@ def create_mares_coordinator():
         description="Main MARES workflow pipeline",
         sub_agents=[
             initializer,  # Step 0: Initialize the brief in state
-            RefinementLoop,  # Step 1: Analyze and validate requirements
-            validator,  # Step 2: Check if validation is complete
-            scripter,  # Step 3: Generate user stories and acceptance criteria
-            estimator,  # Step 4: Estimate story points
-            report_generator  # Step 5: Generate final report
+            analyst, # Step 1: Analyze and validate requirements,
+            refinement_validator,  # Step 2: request additional info for missing points, step by step
+            validator,  # Step 3: Check if validation is complete
+            scripter,  # Step 4: Generate user stories and acceptance criteria
+            estimator,  # Step 5: Estimate story points
+            report_generator  # Step 6: Generate final report
         ]
     )
 
