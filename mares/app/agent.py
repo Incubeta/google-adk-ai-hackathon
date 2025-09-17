@@ -12,346 +12,401 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-import json
-from typing import Dict, Any, AsyncGenerator
-import google.auth
-from google.adk.agents import LlmAgent, SequentialAgent, BaseAgent
+import datetime
+import logging
+import re
+from collections.abc import AsyncGenerator
+from typing import Literal
+
+from google.adk.agents import BaseAgent, LlmAgent, LoopAgent, SequentialAgent
+from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
+from google.adk.planners import BuiltInPlanner
+from google.adk.tools import google_search
+from google.adk.tools.agent_tool import AgentTool
+from google.genai import types as genai_types
+from pydantic import BaseModel, Field
 
-_, project_id = google.auth.default()
-os.environ.setdefault("GOOGLE_CLOUD_PROJECT", project_id)
-os.environ.setdefault("GOOGLE_CLOUD_LOCATION", "global")
-os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "True")
+from .config import config
 
 
-class AnalystValidationAgent(BaseAgent):
+# --- Structured Output Models ---
+class SearchQuery(BaseModel):
+    """Model representing a specific search query for web search."""
+
+    search_query: str = Field(
+        description="A highly specific and targeted query for web search."
+    )
+
+
+class Feedback(BaseModel):
+    """Model for providing evaluation feedback on research quality."""
+
+    grade: Literal["pass", "fail"] = Field(
+        description="Evaluation result. 'pass' if the research is sufficient, 'fail' if it needs revision."
+    )
+    comment: str = Field(
+        description="Detailed explanation of the evaluation, highlighting strengths and/or weaknesses of the research."
+    )
+    follow_up_queries: list[SearchQuery] | None = Field(
+        default=None,
+        description="A list of specific, targeted follow-up search queries needed to fix research gaps. This should be null or empty if the grade is 'pass'.",
+    )
+
+
+# --- Callbacks ---
+def collect_research_sources_callback(callback_context: CallbackContext) -> None:
+    """Collects and organizes web-based research sources and their supported claims from agent events.
+
+    This function processes the agent's `session.events` to extract web source details (URLs,
+    titles, domains from `grounding_chunks`) and associated text segments with confidence scores
+    (from `grounding_supports`). The aggregated source information and a mapping of URLs to short
+    IDs are cumulatively stored in `callback_context.state`.
+
+    Args:
+        callback_context (CallbackContext): The context object providing access to the agent's
+            session events and persistent state.
     """
-    Custom agent that checks if the analyst's output indicates completion
-    and processes the validation result.
-    """
-
-    def __init__(self):
-        super().__init__(
-            name="AnalystValidator",
-            description="Validates analyst output and determines if brief is complete"
-        )
-
-    async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
-        """Check if analyst marked the brief as complete."""
-        # Get the analyst's response from state
-        analyst_response = ctx.session.state.get("analyst_output", "{}")
-
-        try:
-            response_data = json.loads(analyst_response)
-            status = response_data.get("status", "ERROR")
-
-            if status == "COMPLETE":
-                # Save the validated brief to state
-                validated_brief = response_data.get("validated_brief", "")
-                ctx.session.state["validated_brief"] = validated_brief
-                ctx.session.state["analysis_complete"] = True
-
-                # Escalate to exit the loop
-                yield Event(
-                    author=self.name,
-                    content=f"✅ Brief validation complete",
-                    actions=EventActions(escalate=True)
-                )
-            elif status == "INCOMPLETE":
-                # Extract questions and save to state for user interaction
-                questions = response_data.get("questions", [])
-                ctx.session.state["pending_questions"] = questions
-                ctx.session.state["analysis_complete"] = False
-
-                yield Event(
-                    author=self.name,
-                    content=f"❗ Additional information needed: {
-                        len(questions)} questions"
-                )
-            else:
-                yield Event(
-                    author=self.name,
-                    content=f"❌ Error in analyst response: {
-                        response_data.get('error', 'Unknown error')}"
-                )
-        except json.JSONDecodeError as e:
-            yield Event(
-                author=self.name,
-                content=f"❌ Failed to parse analyst response: {str(e)}"
+    session = callback_context._invocation_context.session
+    url_to_short_id = callback_context.state.get("url_to_short_id", {})
+    sources = callback_context.state.get("sources", {})
+    id_counter = len(url_to_short_id) + 1
+    for event in session.events:
+        if not (event.grounding_metadata and event.grounding_metadata.grounding_chunks):
+            continue
+        chunks_info = {}
+        for idx, chunk in enumerate(event.grounding_metadata.grounding_chunks):
+            if not chunk.web:
+                continue
+            url = chunk.web.uri
+            title = (
+                chunk.web.title
+                if chunk.web.title != chunk.web.domain
+                else chunk.web.domain
             )
+            if url not in url_to_short_id:
+                short_id = f"src-{id_counter}"
+                url_to_short_id[url] = short_id
+                sources[short_id] = {
+                    "short_id": short_id,
+                    "title": title,
+                    "url": url,
+                    "domain": chunk.web.domain,
+                    "supported_claims": [],
+                }
+                id_counter += 1
+            chunks_info[idx] = url_to_short_id[url]
+        if event.grounding_metadata.grounding_supports:
+            for support in event.grounding_metadata.grounding_supports:
+                confidence_scores = support.confidence_scores or []
+                chunk_indices = support.grounding_chunk_indices or []
+                for i, chunk_idx in enumerate(chunk_indices):
+                    if chunk_idx in chunks_info:
+                        short_id = chunks_info[chunk_idx]
+                        confidence = (
+                            confidence_scores[i] if i < len(confidence_scores) else 0.5
+                        )
+                        text_segment = support.segment.text if support.segment else ""
+                        sources[short_id]["supported_claims"].append(
+                            {
+                                "text_segment": text_segment,
+                                "confidence": confidence,
+                            }
+                        )
+    callback_context.state["url_to_short_id"] = url_to_short_id
+    callback_context.state["sources"] = sources
 
 
-# Define the three main agents using LlmAgent
-def create_analyst_agent():
-    """Create the Business Analyst agent."""
-    instruction = """You are an expert, skeptical Senior Business Analyst with 15+ years of experience 
-    in requirements gathering and validation. Your role is to ensure project briefs are 
-    complete and unambiguous before they proceed to development.
-    
-    You task is to look through the supplied brief by the user and validate if it meets all the criteria as stated 
-    
-    <DEFINITION OF READY CHECKLIST>
-    1. Goal & Metrics: Clear business objectives and measurable success criteria
-    2. Users/Actors: Well-defined user roles and stakeholders
-    3. Scope: Clear boundaries of what's included and excluded
-    4. Functional Requirements: Detailed features and capabilities
-    5. Data Requirements: Data sources, formats, and storage needs
-    6. Non-Functional Requirements:
-       - Security: Authentication, authorization, data protection
-       - Performance: Response times, throughput, scalability
-       - Usability: User experience requirements
-       - Compliance: Regulatory or policy requirements
-    </DEFINITION OF READY CHECKLIST>
-    
-    TASK:
-    Analyze the provided project brief against the Definition of Ready checklist.
-    The brief is in {project_brief} 
-    
-    If the brief is INCOMPLETE:
-    - Identify specific gaps and ambiguities
-    - Generate targeted clarifying questions (3-7 questions)
-    - Focus on critical missing information
-    
-    If the brief is COMPLETE:
-    - Confirm all checklist items are addressed
-    - Provide a validated summary of the requirements
-    
-    while the brief is incomplete ask the user to answer every queystion until the brief is complete.
+def citation_replacement_callback(
+    callback_context: CallbackContext,
+) -> genai_types.Content:
+    """Replaces citation tags in a report with Markdown-formatted links.
+
+    Processes 'final_cited_report' from context state, converting tags like
+    `<cite source="src-N"/>` into hyperlinks using source information from
+    `callback_context.state["sources"]`. Also fixes spacing around punctuation.
+
+    Args:
+        callback_context (CallbackContext): Contains the report and source information.
+
+    Returns:
+        genai_types.Content: The processed report with Markdown citation links.
     """
+    final_report = callback_context.state.get("final_cited_report", "")
+    sources = callback_context.state.get("sources", {})
 
-    return LlmAgent(
-        name="BusinessAnalyst",
-        model="gemini-2.0-flash",
-        instruction=instruction,
-        description="Analyzes project briefs and identifies ambiguities",
-        output_key="analyst_output"  # Saves output to state['analyst_output']
+    def tag_replacer(match: re.Match) -> str:
+        short_id = match.group(1)
+        if not (source_info := sources.get(short_id)):
+            logging.warning(f"Invalid citation tag found and removed: {match.group(0)}")
+            return ""
+        display_text = source_info.get("title", source_info.get("domain", short_id))
+        return f" [{display_text}]({source_info['url']})"
+
+    processed_report = re.sub(
+        r'<cite\s+source\s*=\s*["\']?\s*(src-\d+)\s*["\']?\s*/>',
+        tag_replacer,
+        final_report,
     )
+    processed_report = re.sub(r"\s+([.,;:])", r"\1", processed_report)
+    callback_context.state["final_report_with_citations"] = processed_report
+    return genai_types.Content(parts=[genai_types.Part(text=processed_report)])
 
 
-def create_scripter_agent():
-    """Create the Product Owner/Scripter agent."""
-    instruction = """You are an expert Agile Product Owner with extensive experience in 
-    decomposing business requirements into actionable development artifacts.
-    
-    TASK:
-    Take the validated requirements brief from {validated_brief} and generate comprehensive 
-    development artifacts that will guide the implementation team.
-    
-    OUTPUT FORMAT:
-    Generate clean Markdown output with the following sections:
-    
-    ## Actors
-    List all user roles and system actors identified in the requirements.
-    
-    ## Use Cases
-    For each actor, define their high-level goals and interactions with the system.
-    
-    ## User Stories
-    Create detailed user stories following this format:
-    **As a** [ROLE], **I want** [ACTION], **so that** [BENEFIT]
-    
-    Number each story (e.g., US-001, US-002) for easy reference.
-    
-    ## Acceptance Criteria
-    For each user story, write acceptance criteria in Gherkin syntax:
-    
-    **GIVEN** [initial context]
-    **WHEN** [action or event]
-    **THEN** [expected outcome]
-    
-    Include multiple scenarios where appropriate to cover edge cases.
-    
-    GUIDELINES:
-    - Be comprehensive but concise
-    - Ensure all requirements from the brief are covered
-    - Maintain consistency in terminology
-    - Focus on testable, measurable criteria
-    - Consider both happy path and edge cases"""
+# --- Custom Agent for Loop Control ---
+class EscalationChecker(BaseAgent):
+    """Checks research evaluation and escalates to stop the loop if grade is 'pass'."""
 
-    return LlmAgent(
-        name="ProductOwner",
-        model="gemini-2.0-flash",
-        instruction=instruction,
-        description="Generates user stories and acceptance criteria from validated requirements",
-        # Saves output to state['stories_and_criteria']
-        output_key="stories_and_criteria"
-    )
+    def __init__(self, name: str):
+        super().__init__(name=name)
+
+    async def _run_async_impl(
+        self, ctx: InvocationContext
+    ) -> AsyncGenerator[Event, None]:
+        evaluation_result = ctx.session.state.get("research_evaluation")
+        if evaluation_result and evaluation_result.get("grade") == "pass":
+            logging.info(
+                f"[{self.name}] Research evaluation passed. Escalating to stop loop."
+            )
+            yield Event(author=self.name, actions=EventActions(escalate=True))
+        else:
+            logging.info(
+                f"[{self.name}] Research evaluation failed or not found. Loop will continue."
+            )
+            # Yielding an event without content or actions just lets the flow continue.
+            yield Event(author=self.name)
 
 
-def create_estimator_agent():
-    """Create the Agile Coach/Estimator agent."""
-    instruction = """You are an expert Agile Coach specializing in relative estimation 
-    and Story Point assessment. You have facilitated hundreds of estimation 
-    sessions and understand the nuances of complexity assessment.
-    
-    TASK:
-    Analyze the user stories from {stories_and_criteria} and assign Story Point estimates based on 
-    relative complexity, effort, and uncertainty.
-    
-    ESTIMATION FRAMEWORK:
-    Use the Fibonacci sequence: 1, 2, 3, 5, 8, 13
-    
-    REFERENCE MODEL:
-    - 1 point: Trivial change (e.g., text update, simple config change)
-    - 2 points: Simple feature (e.g., basic CRUD operation, simple validation)
-    - 3 points: Moderate complexity (e.g., multi-step workflow, basic integration)
-    - 5 points: Significant complexity (e.g., complex business logic, external API integration)
-    - 8 points: High complexity (e.g., new architectural component, complex algorithm)
-    - 13 points: Very high complexity (e.g., major system redesign, multiple integrations)
-    
-    COMPLEXITY FACTORS TO CONSIDER:
-    1. Technical Complexity: Algorithm complexity, data processing needs
-    2. Integration Points: Number of systems/components involved
-    3. Business Logic: Complexity of rules and validations
-    4. Data Volume: Amount of data to process or migrate
-    5. User Interface: Complexity of UI/UX requirements
-    6. Testing Effort: Test scenarios and edge cases
-    7. Uncertainty: Unknown factors or dependencies
-    8. Performance Requirements: Optimization needs
-    
-    OUTPUT FORMAT:
-    Generate a Markdown table with exactly three columns:
-    
-    | User Story | Story Points | Justification |
-    |------------|--------------|---------------|
-    | [Story description] | [Points] | [Brief explanation of complexity factors] |
-    
-    GUIDELINES:
-    - Be consistent in your relative assessments
-    - Consider all complexity factors, not just development time
-    - Provide clear, concise justifications
-    - If a story seems larger than 13 points, note it should be decomposed"""
+# --- AGENT DEFINITIONS ---
+plan_generator = LlmAgent(
+    model=config.worker_model,
+    name="plan_generator",
+    description="Generates or refine the existing 5 line action-oriented research plan, using minimal search only for topic clarification.",
+    instruction=f"""
+    You are a research strategist. Your job is to create a high-level RESEARCH PLAN, not a summary. If there is already a RESEARCH PLAN in the session state,
+    improve upon it based on the user feedback.
 
-    return LlmAgent(
-        name="AgileCoach",
-        model="gemini-2.0-flash",
-        instruction=instruction,
-        description="Provides Story Point estimates for user stories",
-        output_key="estimations"  # Saves output to state['estimations']
-    )
+    RESEARCH PLAN(SO FAR):
+    {{ research_plan? }}
+
+    **GENERAL INSTRUCTION: CLASSIFY TASK TYPES**
+    Your plan must clearly classify each goal for downstream execution. Each bullet point should start with a task type prefix:
+    - **`[RESEARCH]`**: For goals that primarily involve information gathering, investigation, analysis, or data collection (these require search tool usage by a researcher).
+    - **`[DELIVERABLE]`**: For goals that involve synthesizing collected information, creating structured outputs (e.g., tables, charts, summaries, reports), or compiling final output artifacts (these are executed AFTER research tasks, often without further search).
+
+    **INITIAL RULE: Your initial output MUST start with a bulleted list of 5 action-oriented research goals or key questions, followed by any *inherently implied* deliverables.**
+    - All initial 5 goals will be classified as `[RESEARCH]` tasks.
+    - A good goal for `[RESEARCH]` starts with a verb like "Analyze," "Identify," "Investigate."
+    - A bad output is a statement of fact like "The event was in April 2024."
+    - **Proactive Implied Deliverables (Initial):** If any of your initial 5 `[RESEARCH]` goals inherently imply a standard output or deliverable (e.g., a comparative analysis suggesting a comparison table, or a comprehensive review suggesting a summary document), you MUST add these as additional, distinct goals immediately after the initial 5. Phrase these as *synthesis or output creation actions* (e.g., "Create a summary," "Develop a comparison," "Compile a report") and prefix them with `[DELIVERABLE][IMPLIED]`.
+
+    **REFINEMENT RULE**:
+    - **Integrate Feedback & Mark Changes:** When incorporating user feedback, make targeted modifications to existing bullet points. Add `[MODIFIED]` to the existing task type and status prefix (e.g., `[RESEARCH][MODIFIED]`). If the feedback introduces new goals:
+        - If it's an information gathering task, prefix it with `[RESEARCH][NEW]`.
+        - If it's a synthesis or output creation task, prefix it with `[DELIVERABLE][NEW]`.
+    - **Proactive Implied Deliverables (Refinement):** Beyond explicit user feedback, if the nature of an existing `[RESEARCH]` goal (e.g., requiring a structured comparison, deep dive analysis, or broad synthesis) or a `[DELIVERABLE]` goal inherently implies an additional, standard output or synthesis step (e.g., a detailed report following a summary, or a visual representation of complex data), proactively add this as a new goal. Phrase these as *synthesis or output creation actions* and prefix them with `[DELIVERABLE][IMPLIED]`.
+    - **Maintain Order:** Strictly maintain the original sequential order of existing bullet points. New bullets, whether `[NEW]` or `[IMPLIED]`, should generally be appended to the list, unless the user explicitly instructs a specific insertion point.
+    - **Flexible Length:** The refined plan is no longer constrained by the initial 5-bullet limit and may comprise more goals as needed to fully address the feedback and implied deliverables.
+
+    **TOOL USE IS STRICTLY LIMITED:**
+    Your goal is to create a generic, high-quality plan *without searching*.
+    Only use `google_search` if a topic is ambiguous or time-sensitive and you absolutely cannot create a plan without a key piece of identifying information.
+    You are explicitly forbidden from researching the *content* or *themes* of the topic. That is the next agent's job. Your search is only to identify the subject, not to investigate it.
+    Current date: {datetime.datetime.now().strftime("%Y-%m-%d")}
+    """,
+    tools=[google_search],
+)
 
 
-def create_report_generator_agent():
-    """Create the Report Generator agent."""
-    instruction = """You are a technical documentation specialist. Your task is to compile 
-    all the project artifacts into a comprehensive final report.
-    
-    Using the following inputs:
-    - Validated Brief: {validated_brief}
-    - User Stories and Acceptance Criteria: {stories_and_criteria}
-    - Story Point Estimations: {estimations}
-    
-    Generate a well-formatted Markdown report with the following structure:
-    
-    # MARES: Functional Design & Estimation Report
-    
-    ## Executive Summary
-    Provide a brief overview of the project scope and key metrics.
-    
-    ## 1. Validated Project Requirements
-    Include the complete validated brief.
-    
-    ## 2. Development Artifacts
-    ### 2.1 Actors and Use Cases
-    ### 2.2 User Stories
-    ### 2.3 Acceptance Criteria
-    
-    ## 3. Complexity Estimation
-    Include the story points table and total estimated effort.
-    
-    ## 4. Implementation Recommendations
-    Based on the analysis, provide key recommendations for the development team.
-    
-    Make the report professional, clear, and ready for stakeholder review."""
-
-    return LlmAgent(
-        name="ReportGenerator",
-        model="gemini-2.0-flash",
-        instruction=instruction,
-        description="Compiles all artifacts into a final report",
-        output_key="final_report"
-    )
+section_planner = LlmAgent(
+    model=config.worker_model,
+    name="section_planner",
+    description="Breaks down the research plan into a structured markdown outline of report sections.",
+    instruction="""
+    You are an expert report architect. Using the research topic and the plan from the 'research_plan' state key, design a logical structure for the final report.
+    Note: Ignore all the tag nanes ([MODIFIED], [NEW], [RESEARCH], [DELIVERABLE]) in the research plan.
+    Your task is to create a markdown outline with 4-6 distinct sections that cover the topic comprehensively without overlap.
+    You can use any markdown format you prefer, but here's a suggested structure:
+    # Section Name
+    A brief overview of what this section covers
+    Feel free to add subsections or bullet points if needed to better organize the content.
+    Make sure your outline is clear and easy to follow.
+    Do not include a "References" or "Sources" section in your outline. Citations will be handled in-line.
+    """,
+    output_key="report_sections",
+)
 
 
-class InitializeBriefAgent(LlmAgent):
-    """
-    Custom agent that initializes the project brief in the state
-    from the user's message.
-    """
+section_researcher = LlmAgent(
+    model=config.worker_model,
+    name="section_researcher",
+    description="Performs the crucial first pass of web research.",
+    planner=BuiltInPlanner(
+        thinking_config=genai_types.ThinkingConfig(include_thoughts=True)
+    ),
+    instruction="""
+    You are a highly capable and diligent research and synthesis agent. Your comprehensive task is to execute a provided research plan with **absolute fidelity**, first by gathering necessary information, and then by synthesizing that information into specified outputs.
 
-    def __init__(self):
-        super().__init__(
-            name="BriefInitializer",
-            description="Extracts and saves the project brief from user input",
-            instruction="Get the project_brief from the user and store it in the state so it can be used by  the next agent",
-            output_key="project_brief"
-        )
+    You will be provided with a sequential list of research plan goals, stored in the `research_plan` state key. Each goal will be clearly prefixed with its primary task type: `[RESEARCH]` or `[DELIVERABLE]`.
 
+    Your execution process must strictly adhere to these two distinct and sequential phases:
 
-# Create the main coordinator agent that orchestrates the workflow
-def create_mares_coordinator():
-    """
-    Create the main MARES coordinator agent using ADK's multi-agent patterns.
-    This implements the Sequential Pipeline Pattern with all three specialist agents.
-    """
+    ---
 
-    # Create the initialization agent
-    initializer = InitializeBriefAgent()
+    **Phase 1: Information Gathering (`[RESEARCH]` Tasks)**
 
-    # Create the specialist agents
-    analyst = create_analyst_agent()
-    scripter = create_scripter_agent()
-    estimator = create_estimator_agent()
-    report_generator = create_report_generator_agent()
-    validator = AnalystValidationAgent()
+    *   **Execution Directive:** You **MUST** systematically process every goal prefixed with `[RESEARCH]` before proceeding to Phase 2.
+    *   For each `[RESEARCH]` goal:
+        *   **Query Generation:** Formulate a comprehensive set of 4-5 targeted search queries. These queries must be expertly designed to broadly cover the specific intent of the `[RESEARCH]` goal from multiple angles.
+        *   **Execution:** Utilize the `google_search` tool to execute **all** generated queries for the current `[RESEARCH]` goal.
+        *   **Summarization:** Synthesize the search results into a detailed, coherent summary that directly addresses the objective of the `[RESEARCH]` goal.
+        *   **Internal Storage:** Store this summary, clearly tagged or indexed by its corresponding `[RESEARCH]` goal, for later and exclusive use in Phase 2. You **MUST NOT** lose or discard any generated summaries.
 
-    # Create the main sequential pipeline
-    main_pipeline = SequentialAgent(
-        name="MARESPipeline",
-        description="Main MARES workflow pipeline",
-        sub_agents=[
-            initializer,  # Step 0: Initialize the brief in state
-            analyst,      # Step 1: Analyze and validate requirements
-            validator,    # Step 2: Check if validation is complete
-            scripter,     # Step 3: Generate user stories and acceptance criteria
-            estimator,    # Step 4: Estimate story points
-            report_generator  # Step 5: Generate final report
-        ]
-    )
+    ---
 
-    # Create the coordinator agent that manages the overall process
-    coordinator_instruction = """You are the MARES Project Coordinator, managing a team of specialist agents
-    to analyze software requirements and generate development artifacts.
-    
-    Your team consists of:
-    1. BusinessAnalyst - Validates requirements and asks clarifying questions
-    2. ProductOwner - Creates user stories and acceptance criteria
-    3. AgileCoach - Estimates story complexity
-    4. ReportGenerator - Compiles the final report
-    
-    You will start by welcoming the user and asking for the client brief. Once you received the 
-    client brief you should take the following steps:
-    1. Save it to the temporary state for the pipeline to access
-    2. Delegate to the MARESPipeline to run the complete analysis workflow
-    3. Monitor the process and handle any user interactions needed
-    4. Ensure all steps complete successfully
-    5. Present the final report to the user
-    
-    
-    Extract the project brief from the user's message and save it to temp:project_brief, then transfer to MARESPipeline."""
+    **Phase 2: Synthesis and Output Creation (`[DELIVERABLE]` Tasks)**
 
-    coordinator = LlmAgent(
-        name="MARESCoordinator",
-        model="gemini-2.0-flash",
-        instruction=coordinator_instruction,
-        description="Orchestrates the MARES requirements analysis process",
-        sub_agents=[main_pipeline]  # Pipeline is a sub-agent of coordinator
-    )
+    *   **Execution Prerequisite:** This phase **MUST ONLY COMMENCE** once **ALL** `[RESEARCH]` goals from Phase 1 have been fully completed and their summaries are internally stored.
+    *   **Execution Directive:** You **MUST** systematically process **every** goal prefixed with `[DELIVERABLE]`. For each `[DELIVERABLE]` goal, your directive is to **PRODUCE** the artifact as explicitly described.
+    *   For each `[DELIVERABLE]` goal:
+        *   **Instruction Interpretation:** You will interpret the goal's text (following the `[DELIVERABLE]` tag) as a **direct and non-negotiable instruction** to generate a specific output artifact.
+            *   *If the instruction details a table (e.g., "Create a Detailed Comparison Table in Markdown format"), your output for this step **MUST** be a properly formatted Markdown table utilizing columns and rows as implied by the instruction and the prepared data.*
+            *   *If the instruction states to prepare a summary, report, or any other structured output, your output for this step **MUST** be that precise artifact.*
+        *   **Data Consolidation:** Access and utilize **ONLY** the summaries generated during Phase 1 (`[RESEARCH]` tasks`) to fulfill the requirements of the current `[DELIVERABLE]` goal. You **MUST NOT** perform new searches.
+        *   **Output Generation:** Based on the specific instruction of the `[DELIVERABLE]` goal:
+            *   Carefully extract, organize, and synthesize the relevant information from your previously gathered summaries.
+            *   Must always produce the specified output artifact (e.g., a concise summary, a structured comparison table, a comprehensive report, a visual representation, etc.) with accuracy and completeness.
+        *   **Output Accumulation:** Maintain and accumulate **all** the generated `[DELIVERABLE]` artifacts. These are your final outputs.
 
-    return coordinator
+    ---
 
+    **Final Output:** Your final output will comprise the complete set of processed summaries from `[RESEARCH]` tasks AND all the generated artifacts from `[DELIVERABLE]` tasks, presented clearly and distinctly.
+    """,
+    tools=[google_search],
+    output_key="section_research_findings",
+    after_agent_callback=collect_research_sources_callback,
+)
 
-# Main entry point - create the root agent
-root_agent = create_mares_coordinator()
+research_evaluator = LlmAgent(
+    model=config.critic_model,
+    name="research_evaluator",
+    description="Critically evaluates research and generates follow-up queries.",
+    instruction=f"""
+    You are a meticulous quality assurance analyst evaluating the research findings in 'section_research_findings'.
+
+    **CRITICAL RULES:**
+    1. Assume the given research topic is correct. Do not question or try to verify the subject itself.
+    2. Your ONLY job is to assess the quality, depth, and completeness of the research provided *for that topic*.
+    3. Focus on evaluating: Comprehensiveness of coverage, logical flow and organization, use of credible sources, depth of analysis, and clarity of explanations.
+    4. Do NOT fact-check or question the fundamental premise or timeline of the topic.
+    5. If suggesting follow-up queries, they should dive deeper into the existing topic, not question its validity.
+
+    Be very critical about the QUALITY of research. If you find significant gaps in depth or coverage, assign a grade of "fail",
+    write a detailed comment about what's missing, and generate 5-7 specific follow-up queries to fill those gaps.
+    If the research thoroughly covers the topic, grade "pass".
+
+    Current date: {datetime.datetime.now().strftime("%Y-%m-%d")}
+    Your response must be a single, raw JSON object validating against the 'Feedback' schema.
+    """,
+    output_schema=Feedback,
+    disallow_transfer_to_parent=True,
+    disallow_transfer_to_peers=True,
+    output_key="research_evaluation",
+)
+
+enhanced_search_executor = LlmAgent(
+    model=config.worker_model,
+    name="enhanced_search_executor",
+    description="Executes follow-up searches and integrates new findings.",
+    planner=BuiltInPlanner(
+        thinking_config=genai_types.ThinkingConfig(include_thoughts=True)
+    ),
+    instruction="""
+    You are a specialist researcher executing a refinement pass.
+    You have been activated because the previous research was graded as 'fail'.
+
+    1.  Review the 'research_evaluation' state key to understand the feedback and required fixes.
+    2.  Execute EVERY query listed in 'follow_up_queries' using the 'google_search' tool.
+    3.  Synthesize the new findings and COMBINE them with the existing information in 'section_research_findings'.
+    4.  Your output MUST be the new, complete, and improved set of research findings.
+    """,
+    tools=[google_search],
+    output_key="section_research_findings",
+    after_agent_callback=collect_research_sources_callback,
+)
+
+report_composer = LlmAgent(
+    model=config.critic_model,
+    name="report_composer_with_citations",
+    include_contents="none",
+    description="Transforms research data and a markdown outline into a final, cited report.",
+    instruction="""
+    Transform the provided data into a polished, professional, and meticulously cited research report.
+
+    ---
+    ### INPUT DATA
+    *   Research Plan: `{research_plan}`
+    *   Research Findings: `{section_research_findings}`
+    *   Citation Sources: `{sources}`
+    *   Report Structure: `{report_sections}`
+
+    ---
+    ### CRITICAL: Citation System
+    To cite a source, you MUST insert a special citation tag directly after the claim it supports.
+
+    **The only correct format is:** `<cite source="src-ID_NUMBER" />`
+
+    ---
+    ### Final Instructions
+    Generate a comprehensive report using ONLY the `<cite source="src-ID_NUMBER" />` tag system for all citations.
+    The final report must strictly follow the structure provided in the **Report Structure** markdown outline.
+    Do not include a "References" or "Sources" section; all citations must be in-line.
+    """,
+    output_key="final_cited_report",
+    after_agent_callback=citation_replacement_callback,
+)
+
+research_pipeline = SequentialAgent(
+    name="research_pipeline",
+    description="Executes a pre-approved research plan. It performs iterative research, evaluation, and composes a final, cited report.",
+    sub_agents=[
+        section_planner,
+        section_researcher,
+        LoopAgent(
+            name="iterative_refinement_loop",
+            max_iterations=config.max_search_iterations,
+            sub_agents=[
+                research_evaluator,
+                EscalationChecker(name="escalation_checker"),
+                enhanced_search_executor,
+            ],
+        ),
+        report_composer,
+    ],
+)
+
+interactive_planner_agent = LlmAgent(
+    name="interactive_planner_agent",
+    model=config.worker_model,
+    description="The primary research assistant. It collaborates with the user to create a research plan, and then executes it upon approval.",
+    instruction=f"""
+    You are a research planning assistant. Your primary function is to convert ANY user request into a research plan.
+
+    **CRITICAL RULE: Never answer a question directly or refuse a request.** Your one and only first step is to use the `plan_generator` tool to propose a research plan for the user's topic.
+    If the user asks a question, you MUST immediately call `plan_generator` to create a plan to answer the question.
+
+    Your workflow is:
+    1.  **Plan:** Use `plan_generator` to create a draft plan and present it to the user.
+    2.  **Refine:** Incorporate user feedback until the plan is approved.
+    3.  **Execute:** Once the user gives EXPLICIT approval (e.g., "looks good, run it"), you MUST delegate the task to the `research_pipeline` agent, passing the approved plan.
+
+    Current date: {datetime.datetime.now().strftime("%Y-%m-%d")}
+    Do not perform any research yourself. Your job is to Plan, Refine, and Delegate.
+    """,
+    sub_agents=[research_pipeline],
+    tools=[AgentTool(plan_generator)],
+    output_key="research_plan",
+)
+
+root_agent = interactive_planner_agent
