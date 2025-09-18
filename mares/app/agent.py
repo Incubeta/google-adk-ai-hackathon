@@ -16,11 +16,9 @@ import os
 import json
 from typing import Dict, Any, AsyncGenerator
 import google.auth
-from google.adk.agents import LlmAgent, SequentialAgent, BaseAgent
+from google.adk.agents import LlmAgent, SequentialAgent, BaseAgent, LoopAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
-from .google_docs_connector import google_docs_toolset
-from .google_drive_connector import google_drive_toolset
 
 _, project_id = google.auth.default()
 os.environ.setdefault("GOOGLE_CLOUD_PROJECT", project_id)
@@ -37,12 +35,10 @@ class AnalystValidationAgent(BaseAgent):
     def __init__(self):
         super().__init__(
             name="AnalystValidator",
-            description="Validates analyst output and determines if brief is complete",
+            description="Validates analyst output and determines if brief is complete"
         )
 
-    async def _run_async_impl(
-        self, ctx: InvocationContext
-    ) -> AsyncGenerator[Event, None]:
+    async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         """Check if analyst marked the brief as complete."""
         # Get the analyst's response from state
         analyst_response = ctx.session.state.get("analyst_output", "{}")
@@ -61,7 +57,7 @@ class AnalystValidationAgent(BaseAgent):
                 yield Event(
                     author=self.name,
                     content=f"✅ Brief validation complete",
-                    actions=EventActions(escalate=True),
+                    actions=EventActions(escalate=True)
                 )
             elif status == "INCOMPLETE":
                 # Extract questions and save to state for user interaction
@@ -72,20 +68,18 @@ class AnalystValidationAgent(BaseAgent):
                 yield Event(
                     author=self.name,
                     content=f"❗ Additional information needed: {
-                        len(questions)
-                    } questions",
+                    len(questions)} questions"
                 )
             else:
                 yield Event(
                     author=self.name,
                     content=f"❌ Error in analyst response: {
-                        response_data.get('error', 'Unknown error')
-                    }",
+                    response_data.get('error', 'Unknown error')}"
                 )
         except json.JSONDecodeError as e:
             yield Event(
                 author=self.name,
-                content=f"❌ Failed to parse analyst response: {str(e)}",
+                content=f"❌ Failed to parse analyst response: {str(e)}"
             )
 
 
@@ -96,9 +90,9 @@ def create_analyst_agent():
     You are an expert, skeptical Senior Business Analyst with 15+ years of experience 
     in requirements gathering and validation. Your role is to ensure project briefs are 
     complete and unambiguous before they proceed to development.
-    
+
     You task is to look through the supplied brief by the user and validate if it meets all the criteria as stated 
-    
+
     <DEFINITION OF READY CHECKLIST>
     1. Goal & Metrics: Clear business objectives and measurable success criteria
     2. Users/Actors: Well-defined user roles and stakeholders
@@ -111,21 +105,13 @@ def create_analyst_agent():
        - Usability: User experience requirements
        - Compliance: Regulatory or policy requirements
     </DEFINITION OF READY CHECKLIST>
-    
+
     TASK:
     Analyze the provided project brief against the Definition of Ready checklist.
     The brief is in {project_brief} 
-    
-    If the brief is INCOMPLETE:
-    - Identify specific gaps and ambiguities
-    - Generate targeted clarifying questions (3-7 questions)
-    - Focus on critical missing information
-    
-    If the brief is COMPLETE:
-    - Confirm all checklist items are addressed
-    - Provide a validated summary of the requirements
-    
-    while the brief is incomplete ask the user to answer every queystion until the brief is complete.
+
+    When you have gathered all the missing elements of the brief, you summarize you findings towards the user
+    and then hand back over to the coordinator to dispatch to the next agent.
     """
 
     return LlmAgent(
@@ -133,43 +119,96 @@ def create_analyst_agent():
         model="gemini-2.5-pro",
         instruction=instruction,
         description="Analyzes project briefs and identifies ambiguities",
-        output_key="analyst_output",  # Saves output to state['analyst_output']
+        output_key="missing_elements"  # Saves output to state['missing_elements']
     )
+
+
+def create_refinement_agent():
+    """Create the Brief Refinement agent."""
+    instruction = """
+    You are an expert, skeptical, but friendly product owner. Your task is to look at the first point of the 
+    {missing_elements} and ask the user for refinement input. DO NOT apply refinements themselves, it is something 
+    that the user should input. DO NOT ask which point to tackle first, just start with what is at the top of the list.
+
+    IF that is done correctly, you update the {project_brief} with the refinement that was inputted buy the user and update the {missing_elements} 
+    list, by taking off the point you covered. Then you revert the user back to the create_refinement_validator_agent agent.
+    """
+
+    return LlmAgent(
+        name="RefinementAgent",
+        model="gemini-2.5-pro",
+        instruction=instruction,
+        description="Gathers additional information to update the brief.",
+        output_key="analyst_output"  # Saves output to state['analyst_output']
+    )
+
+
+refinement = create_refinement_agent()
+
+
+def create_refinement_validator_agent():
+    """Create the Brief Refinement validator agent."""
+    instruction = """
+    You are an expert product owner. Your task is to look that the {missing_elements} to see if there is still 
+    anything on there. 
+
+    IF there are still elements on the {missing_elements} list you say "Next point" and revert the user to the refinement dub-agent.
+
+    IF all point have been covered, you revert the user back to the coordinator to dispatch to the next agent.
+    """
+
+    return LlmAgent(
+        name="RefinementsValidationAgent",
+        model="gemini-2.5-flash",
+        instruction=instruction,
+        description="Checks if all missing elements have been dealt with.",
+        sub_agents=[refinement],
+        output_key="analyst_output"  # Saves output to state['analyst_output']
+    )
+
+
+# def create_refinement_loop_agent():
+#     return LoopAgent(
+#         name="RefinementLoop",
+#         # Agent order is crucial: Critique first, then Refine/Exit
+#         sub_agents=[refinement],
+#         max_iterations=10  # Limit loops
+#     )
 
 
 def create_scripter_agent():
     """Create the Product Owner/Scripter agent."""
     instruction = """You are an expert Agile Product Owner with extensive experience in 
     decomposing business requirements into actionable development artifacts.
-    
+
     TASK:
     Take the validated requirements brief from {validated_brief} and generate comprehensive 
     development artifacts that will guide the implementation team.
-    
+
     OUTPUT FORMAT:
     Generate clean Markdown output with the following sections:
-    
+
     ## Actors
     List all user roles and system actors identified in the requirements.
-    
+
     ## Use Cases
     For each actor, define their high-level goals and interactions with the system.
-    
+
     ## User Stories
     Create detailed user stories following this format:
     **As a** [ROLE], **I want** [ACTION], **so that** [BENEFIT]
-    
+
     Number each story (e.g., US-001, US-002) for easy reference.
-    
+
     ## Acceptance Criteria
     For each user story, write acceptance criteria in Gherkin syntax:
-    
+
     **GIVEN** [initial context]
     **WHEN** [action or event]
     **THEN** [expected outcome]
-    
+
     Include multiple scenarios where appropriate to cover edge cases.
-    
+
     GUIDELINES:
     - Be comprehensive but concise
     - Ensure all requirements from the brief are covered
@@ -183,7 +222,7 @@ def create_scripter_agent():
         instruction=instruction,
         description="Generates user stories and acceptance criteria from validated requirements",
         # Saves output to state['stories_and_criteria']
-        output_key="stories_and_criteria",
+        output_key="stories_and_criteria"
     )
 
 
@@ -192,14 +231,14 @@ def create_estimator_agent():
     instruction = """You are an expert Agile Coach specializing in relative estimation 
     and Story Point assessment. You have facilitated hundreds of estimation 
     sessions and understand the nuances of complexity assessment.
-    
+
     TASK:
     Analyze the user stories from {stories_and_criteria} and assign Story Point estimates based on 
     relative complexity, effort, and uncertainty.
-    
+
     ESTIMATION FRAMEWORK:
     Use the Fibonacci sequence: 1, 2, 3, 5, 8, 13
-    
+
     REFERENCE MODEL:
     - 1 point: Trivial change (e.g., text update, simple config change)
     - 2 points: Simple feature (e.g., basic CRUD operation, simple validation)
@@ -207,7 +246,7 @@ def create_estimator_agent():
     - 5 points: Significant complexity (e.g., complex business logic, external API integration)
     - 8 points: High complexity (e.g., new architectural component, complex algorithm)
     - 13 points: Very high complexity (e.g., major system redesign, multiple integrations)
-    
+
     COMPLEXITY FACTORS TO CONSIDER:
     1. Technical Complexity: Algorithm complexity, data processing needs
     2. Integration Points: Number of systems/components involved
@@ -217,14 +256,14 @@ def create_estimator_agent():
     6. Testing Effort: Test scenarios and edge cases
     7. Uncertainty: Unknown factors or dependencies
     8. Performance Requirements: Optimization needs
-    
+
     OUTPUT FORMAT:
     Generate a Markdown table with exactly three columns:
-    
+
     | User Story | Story Points | Justification |
     |------------|--------------|---------------|
     | [Story description] | [Points] | [Brief explanation of complexity factors] |
-    
+
     GUIDELINES:
     - Be consistent in your relative assessments
     - Consider all complexity factors, not just development time
@@ -236,7 +275,7 @@ def create_estimator_agent():
         model="gemini-2.5-pro",
         instruction=instruction,
         description="Provides Story Point estimates for user stories",
-        output_key="estimations",  # Saves output to state['estimations']
+        output_key="estimations"  # Saves output to state['estimations']
     )
 
 
@@ -244,44 +283,41 @@ def create_report_generator_agent():
     """Create the Report Generator agent."""
     instruction = """You are a technical documentation specialist. Your task is to compile 
     all the project artifacts into a comprehensive final report.
-    
+
     Using the following inputs:
     - Validated Brief: {validated_brief}
     - User Stories and Acceptance Criteria: {stories_and_criteria}
     - Story Point Estimations: {estimations}
-    
+
     Generate a well-formatted Markdown report with the following structure:
-    
+
     # MARES: Functional Design & Estimation Report
-    
+
     ## Executive Summary
     Provide a brief overview of the project scope and key metrics.
-    
+
     ## 1. Validated Project Requirements
     Include the complete validated brief.
-    
+
     ## 2. Development Artifacts
     ### 2.1 Actors and Use Cases
     ### 2.2 User Stories
     ### 2.3 Acceptance Criteria
-    
+
     ## 3. Complexity Estimation
     Include the story points table and total estimated effort.
-    
+
     ## 4. Implementation Recommendations
     Based on the analysis, provide key recommendations for the development team.
-    
-    Make the report professional, clear, and ready for stakeholder review.
-    And Save it to Google Drive with the tools supplied to you - using Google Docs.
-    """
+
+    Make the report professional, clear, and ready for stakeholder review."""
 
     return LlmAgent(
         name="ReportGenerator",
         model="gemini-2.5-pro",
         instruction=instruction,
         description="Compiles all artifacts into a final report",
-        output_key="final_report",
-        tools=[google_docs_toolset, google_drive_toolset],
+        output_key="final_report"
     )
 
 
@@ -296,7 +332,7 @@ class InitializeBriefAgent(LlmAgent):
             name="BriefInitializer",
             description="Extracts and saves the project brief from user input",
             instruction="Get the project_brief from the user and store it in the state so it can be used by  the next agent",
-            output_key="project_brief",
+            output_key="project_brief"
         )
 
 
@@ -311,7 +347,9 @@ def create_mares_coordinator():
     initializer = InitializeBriefAgent()
 
     # Create the specialist agents
+    # RefinementLoop = create_refinement_loop_agent()
     analyst = create_analyst_agent()
+    refinement_validator = create_refinement_validator_agent()
     scripter = create_scripter_agent()
     estimator = create_estimator_agent()
     report_generator = create_report_generator_agent()
@@ -323,24 +361,25 @@ def create_mares_coordinator():
         description="Main MARES workflow pipeline",
         sub_agents=[
             initializer,  # Step 0: Initialize the brief in state
-            analyst,  # Step 1: Analyze and validate requirements
-            validator,  # Step 2: Check if validation is complete
-            scripter,  # Step 3: Generate user stories and acceptance criteria
-            estimator,  # Step 4: Estimate story points
-            report_generator,  # Step 5: Generate final report
-        ],
+            analyst,  # Step 1: Analyze and validate requirements,
+            refinement_validator,  # Step 2: request additional info for missing points, step by step
+            validator,  # Step 3: Check if validation is complete
+            scripter,  # Step 4: Generate user stories and acceptance criteria
+            estimator,  # Step 5: Estimate story points
+            report_generator  # Step 6: Generate final report
+        ]
     )
 
     # Create the coordinator agent that manages the overall process
     coordinator_instruction = """You are the MARES Project Coordinator, managing a team of specialist agents
     to analyze software requirements and generate development artifacts.
-    
+
     Your team consists of:
     1. BusinessAnalyst - Validates requirements and asks clarifying questions
     2. ProductOwner - Creates user stories and acceptance criteria
     3. AgileCoach - Estimates story complexity
     4. ReportGenerator - Compiles the final report
-    
+
     You will start by welcoming the user and asking for the client brief. Once you received the 
     client brief you should take the following steps:
     1. Save it to the temporary state for the pipeline to access
@@ -348,8 +387,8 @@ def create_mares_coordinator():
     3. Monitor the process and handle any user interactions needed
     4. Ensure all steps complete successfully
     5. Present the final report to the user
-    
-    
+
+
     Extract the project brief from the user's message and save it to temp:project_brief, then transfer to MARESPipeline."""
 
     coordinator = LlmAgent(
@@ -357,7 +396,7 @@ def create_mares_coordinator():
         model="gemini-2.0-flash",
         instruction=coordinator_instruction,
         description="Orchestrates the MARES requirements analysis process",
-        sub_agents=[main_pipeline],  # Pipeline is a sub-agent of coordinator
+        sub_agents=[main_pipeline]  # Pipeline is a sub-agent of coordinator
     )
 
     return coordinator
