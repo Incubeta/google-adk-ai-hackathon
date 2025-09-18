@@ -317,7 +317,36 @@ def create_report_generator_agent():
         model="gemini-2.5-pro",
         instruction=instruction,
         description="Compiles all artifacts into a final report",
-        output_key="final_report"
+        output_key="final_report",
+    )
+
+
+def create_google_docs_saver_agent():
+    """Create the Google Docs Saver agent."""
+    instruction = """You are a Google Docs specialist responsible for saving reports to Google Docs.
+    
+    Your task is to:
+    1. Generate a descriptive file name based on the final report content from {final_report}
+    2. Ask the user if the generated file name is acceptable for saving to Google Docs
+    3. If the user says it's not ok, ask for an alternative file name
+    4. If the user says it's ok (or provides an alternative), use the google-docs batch update functionality to save the content to the specific Google Docs document: https://docs.google.com/document/d/13-PDPXIMVbD0vgCSf1eb2CNt_NNncStX6FKE6J3KokI/edit?tab=t.0
+    
+    The document ID to use is: 13-PDPXIMVbD0vgCSf1eb2CNt_NNncStX6FKE6J3KokI
+    
+    When generating file names, make them descriptive and professional, for example:
+    - "MARES_Requirements_Analysis_[ProjectName]_[Date]"
+    - "Functional_Design_Report_[ProjectName]_[Date]"
+    
+    Use the docs_documents_batch_update tool to insert the report content into the document.
+    """
+
+    return LlmAgent(
+        name="GoogleDocsSaver",
+        model="gemini-2.0-flash",
+        instruction=instruction,
+        description="Handles file naming and saving reports to Google Docs",
+        output_key="docs_save_result",
+        tools=[google_docs_toolset, google_drive_toolset],
     )
 
 
@@ -353,6 +382,7 @@ def create_mares_coordinator():
     scripter = create_scripter_agent()
     estimator = create_estimator_agent()
     report_generator = create_report_generator_agent()
+    google_docs_saver = create_google_docs_saver_agent()
     validator = AnalystValidationAgent()
 
     # Create the main sequential pipeline
@@ -366,7 +396,8 @@ def create_mares_coordinator():
             validator,  # Step 3: Check if validation is complete
             scripter,  # Step 4: Generate user stories and acceptance criteria
             estimator,  # Step 5: Estimate story points
-            report_generator  # Step 6: Generate final report
+            report_generator,  # Step 6: Generate final report
+            google_docs_saver,  # Step 7: Save report to Google Docs
         ]
     )
 
@@ -379,7 +410,8 @@ def create_mares_coordinator():
     2. ProductOwner - Creates user stories and acceptance criteria
     3. AgileCoach - Estimates story complexity
     4. ReportGenerator - Compiles the final report
-
+    5. GoogleDocsSaver - Handles file naming and saves reports to Google Docs
+    
     You will start by welcoming the user and asking for the client brief. Once you received the 
     client brief you should take the following steps:
     1. Save it to the temporary state for the pipeline to access
@@ -387,8 +419,8 @@ def create_mares_coordinator():
     3. Monitor the process and handle any user interactions needed
     4. Ensure all steps complete successfully
     5. Present the final report to the user
-
-
+    6. The GoogleDocsSaver agent will handle file naming and saving to Google Docs
+    
     Extract the project brief from the user's message and save it to temp:project_brief, then transfer to MARESPipeline."""
 
     coordinator = LlmAgent(
@@ -396,7 +428,8 @@ def create_mares_coordinator():
         model="gemini-2.0-flash",
         instruction=coordinator_instruction,
         description="Orchestrates the MARES requirements analysis process",
-        sub_agents=[main_pipeline]  # Pipeline is a sub-agent of coordinator
+        sub_agents=[main_pipeline],  # Pipeline is a sub-agent of coordinator
+        tools=[google_docs_toolset, google_drive_toolset],
     )
 
     return coordinator
