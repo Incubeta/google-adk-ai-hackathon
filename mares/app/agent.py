@@ -19,6 +19,8 @@ import google.auth
 from google.adk.agents import LlmAgent, SequentialAgent, BaseAgent, LoopAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
+from .google_docs_connector import google_docs_toolset
+from .google_drive_connector import google_drive_toolset
 
 _, project_id = google.auth.default()
 os.environ.setdefault("GOOGLE_CLOUD_PROJECT", project_id)
