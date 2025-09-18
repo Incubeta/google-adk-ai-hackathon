@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button";
 import { InputForm } from "@/components/InputForm";
 
 interface WelcomeScreenProps {
-  handleSubmit: (query: string) => void;
+  handleSubmit: (query: string, files?: File[]) => void;
   isLoading: boolean;
   onCancel: () => void;
 }

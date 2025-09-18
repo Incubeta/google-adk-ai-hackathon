@@ -3,56 +3,41 @@ import { v4 as uuidv4 } from 'uuid';
 import { WelcomeScreen } from "@/components/WelcomeScreen";
 import { ChatMessagesView } from "@/components/ChatMessagesView";
 
-// Update DisplayData to be a string type
-type DisplayData = string | null;
 interface MessageWithAgent {
   type: "human" | "ai";
   content: string;
   id: string;
   agent?: string;
-  finalReportWithCitations?: boolean;
+  files?: File[];
 }
 
-interface AgentMessage {
-  parts: { text: string }[];
-  role: string;
-}
 
-interface AgentResponse {
-  content: AgentMessage;
-  usageMetadata: {
-    candidatesTokenCount: number;
-    promptTokenCount: number;
-    totalTokenCount: number;
-  };
-  author: string;
-  actions: {
-    stateDelta: {
-      research_plan?: string;
-      final_report_with_citations?: boolean;
-    };
-  };
-}
-
-interface ProcessedEvent {
-  title: string;
-  data: any;
-}
 
 export default function App() {
   const [userId, setUserId] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [appName, setAppName] = useState<string | null>(null);
   const [messages, setMessages] = useState<MessageWithAgent[]>([]);
-  const [displayData, setDisplayData] = useState<DisplayData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [messageEvents, setMessageEvents] = useState<Map<string, ProcessedEvent[]>>(new Map());
-  const [websiteCount, setWebsiteCount] = useState<number>(0);
   const [isBackendReady, setIsBackendReady] = useState(false);
   const [isCheckingBackend, setIsCheckingBackend] = useState(true);
   const currentAgentRef = useRef('');
   const accumulatedTextRef = useRef("");
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+
+  // Helper function to convert file to base64
+  const fileToBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => {
+        // Remove the data URL prefix (e.g., "data:image/png;base64,")
+        const base64String = (reader.result as string).split(',')[1];
+        resolve(base64String);
+      };
+      reader.onerror = error => reject(error);
+    });
+  };
 
   const retryWithBackoff = async (
     fn: () => Promise<any>,
@@ -125,28 +110,12 @@ export default function App() {
 
       let textParts: string[] = [];
       let agent = '';
-      let finalReportWithCitations = undefined;
-      let functionCall = null;
-      let functionResponse = null;
-      let sources = null;
 
       // Check if content.parts exists and has text
       if (parsed.content && parsed.content.parts) {
         textParts = parsed.content.parts
           .filter((part: any) => part.text)
           .map((part: any) => part.text);
-        
-        // Check for function calls
-        const functionCallPart = parsed.content.parts.find((part: any) => part.functionCall);
-        if (functionCallPart) {
-          functionCall = functionCallPart.functionCall;
-        }
-        
-        // Check for function responses
-        const functionResponsePart = parsed.content.parts.find((part: any) => part.functionResponse);
-        if (functionResponsePart) {
-          functionResponse = functionResponsePart.functionResponse;
-        }
       }
 
       // Extract agent information
@@ -155,135 +124,43 @@ export default function App() {
         console.log('[SSE EXTRACT] Agent:', agent); // DEBUG: Log agent
       }
 
-      if (
-        parsed.actions &&
-        parsed.actions.stateDelta &&
-        parsed.actions.stateDelta.final_report_with_citations
-      ) {
-        finalReportWithCitations = parsed.actions.stateDelta.final_report_with_citations;
-      }
-
-      // Extract website count from research agents
-      let sourceCount = 0;
-      if ((parsed.author === 'section_researcher' || parsed.author === 'enhanced_search_executor')) {
-        console.log('[SSE EXTRACT] Relevant agent for source count:', parsed.author); // DEBUG
-        if (parsed.actions?.stateDelta?.url_to_short_id) {
-          console.log('[SSE EXTRACT] url_to_short_id found:', parsed.actions.stateDelta.url_to_short_id); // DEBUG
-          sourceCount = Object.keys(parsed.actions.stateDelta.url_to_short_id).length;
-          console.log('[SSE EXTRACT] Calculated sourceCount:', sourceCount); // DEBUG
-        } else {
-          console.log('[SSE EXTRACT] url_to_short_id NOT found for agent:', parsed.author); // DEBUG
-        }
-      }
-
-      // Extract sources if available
-      if (parsed.actions?.stateDelta?.sources) {
-        sources = parsed.actions.stateDelta.sources;
-        console.log('[SSE EXTRACT] Sources found:', sources); // DEBUG
-      }
-
-
-      return { textParts, agent, finalReportWithCitations, functionCall, functionResponse, sourceCount, sources };
+      return { textParts, agent };
     } catch (error) {
       // Log the error and a truncated version of the problematic data for easier debugging.
       const truncatedData = data.length > 200 ? data.substring(0, 200) + "..." : data;
       console.error('Error parsing SSE data. Raw data (truncated): "', truncatedData, '". Error details:', error);
-      return { textParts: [], agent: '', finalReportWithCitations: undefined, functionCall: null, functionResponse: null, sourceCount: 0, sources: null };
+      return { textParts: [], agent: '' };
     }
   };
 
-  // Define getEventTitle here or ensure it's in scope from where it's used
-  const getEventTitle = (agentName: string): string => {
-    switch (agentName) {
-      case "plan_generator":
-        return "Planning Research Strategy";
-      case "section_planner":
-        return "Structuring Report Outline";
-      case "section_researcher":
-        return "Initial Web Research";
-      case "research_evaluator":
-        return "Evaluating Research Quality";
-      case "EscalationChecker":
-        return "Quality Assessment";
-      case "enhanced_search_executor":
-        return "Enhanced Web Research";
-      case "research_pipeline":
-        return "Executing Research Pipeline";
-      case "iterative_refinement_loop":
-        return "Refining Research";
-      case "interactive_planner_agent":
-      case "root_agent":
-        return "Interactive Planning";
-      default:
-        return `Processing (${agentName || 'Unknown Agent'})`;
-    }
-  };
 
   const processSseEventData = (jsonData: string, aiMessageId: string) => {
-    const { textParts, agent, finalReportWithCitations, functionCall, functionResponse, sourceCount, sources } = extractDataFromSSE(jsonData);
-
-    if (sourceCount > 0) {
-      console.log('[SSE HANDLER] Updating websiteCount. Current sourceCount:', sourceCount);
-      setWebsiteCount(prev => Math.max(prev, sourceCount));
-    }
+    const { textParts, agent } = extractDataFromSSE(jsonData);
 
     if (agent && agent !== currentAgentRef.current) {
       currentAgentRef.current = agent;
     }
 
-    if (functionCall) {
-      const functionCallTitle = `Function Call: ${functionCall.name}`;
-      console.log('[SSE HANDLER] Adding Function Call timeline event:', functionCallTitle);
-      setMessageEvents(prev => new Map(prev).set(aiMessageId, [...(prev.get(aiMessageId) || []), {
-        title: functionCallTitle,
-        data: { type: 'functionCall', name: functionCall.name, args: functionCall.args, id: functionCall.id }
-      }]));
-    }
-
-    if (functionResponse) {
-      const functionResponseTitle = `Function Response: ${functionResponse.name}`;
-      console.log('[SSE HANDLER] Adding Function Response timeline event:', functionResponseTitle);
-      setMessageEvents(prev => new Map(prev).set(aiMessageId, [...(prev.get(aiMessageId) || []), {
-        title: functionResponseTitle,
-        data: { type: 'functionResponse', name: functionResponse.name, response: functionResponse.response, id: functionResponse.id }
-      }]));
-    }
-
-    if (textParts.length > 0 && agent !== "report_composer_with_citations") {
-      if (agent !== "interactive_planner_agent") {
-        const eventTitle = getEventTitle(agent);
-        console.log('[SSE HANDLER] Adding Text timeline event for agent:', agent, 'Title:', eventTitle, 'Data:', textParts.join(" "));
-        setMessageEvents(prev => new Map(prev).set(aiMessageId, [...(prev.get(aiMessageId) || []), {
-          title: eventTitle,
-          data: { type: 'text', content: textParts.join(" ") }
-        }]));
-      } else { // interactive_planner_agent text updates the main AI message
-        for (const text of textParts) {
-          accumulatedTextRef.current += text + " ";
-          setMessages(prev => prev.map(msg =>
-            msg.id === aiMessageId ? { ...msg, content: accumulatedTextRef.current.trim(), agent: currentAgentRef.current || msg.agent } : msg
-          ));
-          setDisplayData(accumulatedTextRef.current.trim());
-        }
+    // Show all agent text directly in the chat
+    if (textParts.length > 0) {
+      for (const text of textParts) {
+        accumulatedTextRef.current += text + " ";
+        setMessages(prev => prev.map(msg =>
+          msg.id === aiMessageId ? { ...msg, content: accumulatedTextRef.current.trim(), agent: currentAgentRef.current || msg.agent } : msg
+        ));
       }
-    }
-
-    if (sources) {
-      console.log('[SSE HANDLER] Adding Retrieved Sources timeline event:', sources);
-      setMessageEvents(prev => new Map(prev).set(aiMessageId, [...(prev.get(aiMessageId) || []), {
-        title: "Retrieved Sources", data: { type: 'sources', content: sources }
-      }]));
-    }
-
-    if (agent === "report_composer_with_citations" && finalReportWithCitations) {
-      const finalReportMessageId = Date.now().toString() + "_final";
-      setMessages(prev => [...prev, { type: "ai", content: finalReportWithCitations as string, id: finalReportMessageId, agent: currentAgentRef.current, finalReportWithCitations: true }]);
-      setDisplayData(finalReportWithCitations as string);
     }
   };
 
-  const handleSubmit = useCallback(async (query: string, model: string, effort: string) => {
-    if (!query.trim()) return;
+  const handleSubmit = useCallback(async (query: string, filesOrModel?: File[] | string) => {
+    // Handle overloaded parameters - filesOrModel can be either files array or model string
+    let files: File[] | undefined;
+
+    if (Array.isArray(filesOrModel)) {
+      files = filesOrModel;
+    }
+
+    if (!query.trim() && !files?.length) return;
 
     setIsLoading(true);
     try {
@@ -291,23 +168,23 @@ export default function App() {
       let currentUserId = userId;
       let currentSessionId = sessionId;
       let currentAppName = appName;
-      
+
       if (!currentSessionId || !currentUserId || !currentAppName) {
         console.log('Creating new session...');
         const sessionData = await retryWithBackoff(createSession);
         currentUserId = sessionData.userId;
         currentSessionId = sessionData.sessionId;
         currentAppName = sessionData.appName;
-        
+
         setUserId(currentUserId);
         setSessionId(currentSessionId);
         setAppName(currentAppName);
         console.log('Session created successfully:', { currentUserId, currentSessionId, currentAppName });
       }
 
-      // Add user message to chat
+      // Add user message to chat with files if provided
       const userMessageId = Date.now().toString();
-      setMessages(prev => [...prev, { type: "human", content: query, id: userMessageId }]);
+      setMessages(prev => [...prev, { type: "human", content: query, id: userMessageId, files }]);
 
       // Create AI message placeholder
       const aiMessageId = Date.now().toString() + "_ai";
@@ -323,6 +200,23 @@ export default function App() {
 
       // Send the message with retry logic
       const sendMessage = async () => {
+        // Prepare the message parts
+        const messageParts: any[] = [{ text: query }];
+
+        // If files are provided, we need to handle them
+        if (files && files.length > 0) {
+          // Convert files to base64 for sending
+          for (const file of files) {
+            const base64 = await fileToBase64(file);
+            messageParts.push({
+              inline_data: {
+                mime_type: file.type,
+                data: base64
+              }
+            });
+          }
+        }
+
         const response = await fetch("/api/run_sse", {
           method: "POST",
           headers: {
@@ -333,7 +227,7 @@ export default function App() {
             userId: currentUserId,
             sessionId: currentSessionId,
             newMessage: {
-              parts: [{ text: query }],
+              parts: messageParts,
               role: "user"
             },
             streaming: false
@@ -343,7 +237,7 @@ export default function App() {
         if (!response.ok) {
           throw new Error(`Failed to send message: ${response.status} ${response.statusText}`);
         }
-        
+
         return response;
       };
 
@@ -356,7 +250,7 @@ export default function App() {
       let eventDataBuffer = "";
 
       if (reader) {
-        // eslint-disable-next-line no-constant-condition
+         
         while (true) {
           const { done, value } = await reader.read();
 
@@ -461,23 +355,9 @@ export default function App() {
 
   const handleCancel = useCallback(() => {
     setMessages([]);
-    setDisplayData(null);
-    setMessageEvents(new Map());
-    setWebsiteCount(0);
     window.location.reload();
   }, []);
 
-  // Scroll to bottom when messages update
-  const scrollToBottom = useCallback(() => {
-    if (scrollAreaRef.current) {
-      const scrollViewport = scrollAreaRef.current.querySelector(
-        "[data-radix-scroll-area-viewport]"
-      );
-      if (scrollViewport) {
-        scrollViewport.scrollTop = scrollViewport.scrollHeight;
-      }
-    }
-  }, []);
 
   const BackendLoadingScreen = () => (
     <div className="flex-1 flex flex-col items-center justify-center p-4 overflow-hidden relative">
@@ -488,7 +368,7 @@ export default function App() {
         
         <div className="text-center space-y-6">
           <h1 className="text-4xl font-bold text-white flex items-center justify-center gap-3">
-            ✨ Gemini FullStack - ADK 🚀
+            ✨ MARES  🚀
           </h1>
           
           <div className="flex flex-col items-center space-y-4">
@@ -553,9 +433,6 @@ export default function App() {
               scrollAreaRef={scrollAreaRef}
               onSubmit={handleSubmit}
               onCancel={handleCancel}
-              displayData={displayData}
-              messageEvents={messageEvents}
-              websiteCount={websiteCount}
             />
           )}
         </div>
