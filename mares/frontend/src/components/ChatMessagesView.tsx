@@ -8,7 +8,6 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from 'remark-gfm';
 import { cn } from "@/utils";
 import { Badge } from "@/components/ui/badge";
-import { ActivityTimeline } from "@/components/ActivityTimeline";
 
 // Markdown component props type from former ReportView
 type MdComponentProps = {
@@ -16,11 +15,6 @@ type MdComponentProps = {
   children?: ReactNode;
   [key: string]: any;
 };
-
-interface ProcessedEvent {
-  title: string;
-  data: any;
-}
 
 // Markdown components (from former ReportView.tsx)
 const mdComponents = {
@@ -163,10 +157,6 @@ interface AiMessageBubbleProps {
   handleCopy: (text: string, messageId: string) => void;
   copiedMessageId: string | null;
   agent?: string;
-  finalReportWithCitations?: boolean;
-  processedEvents: ProcessedEvent[];
-  websiteCount: number;
-  isLoading: boolean;
 }
 
 // AiMessageBubble Component
@@ -176,120 +166,43 @@ const AiMessageBubble: React.FC<AiMessageBubbleProps> = ({
   handleCopy,
   copiedMessageId,
   agent,
-  finalReportWithCitations,
-  processedEvents,
-  websiteCount,
-  isLoading,
 }) => {
-  // Show ActivityTimeline if we have processedEvents (this will be the first AI message)
-  const shouldShowTimeline = processedEvents.length > 0;
-  
-  // Condition for DIRECT DISPLAY (interactive_planner_agent OR final report)
-  const shouldDisplayDirectly = 
-    agent === "interactive_planner_agent" || 
-    (agent === "report_composer_with_citations" && finalReportWithCitations);
-  
-  if (shouldDisplayDirectly) {
-    // Direct display - show content with copy button, and timeline if available
-    return (
-      <div className="relative break-words flex flex-col w-full">
-        {/* Show timeline for interactive_planner_agent if available */}
-        {shouldShowTimeline && agent === "interactive_planner_agent" && (
-          <div className="w-full mb-2">
-            <ActivityTimeline 
-              processedEvents={processedEvents}
-              isLoading={isLoading}
-              websiteCount={websiteCount}
-            />
-          </div>
-        )}
-        <div className="flex items-start gap-3">
-          <div className="flex-1">
-            <ReactMarkdown components={mdComponents} remarkPlugins={[remarkGfm]}>
-              {message.content}
-            </ReactMarkdown>
-          </div>
-          <button
-            onClick={() => handleCopy(message.content, message.id)}
-            className="p-1 hover:bg-neutral-700 rounded"
-          >
-            {copiedMessageId === message.id ? (
-              <CopyCheck className="h-4 w-4 text-green-500" />
-            ) : (
-              <Copy className="h-4 w-4 text-neutral-400" />
-            )}
-          </button>
+  // Simply display all content with copy button
+  return (
+    <div className="relative break-words flex flex-col w-full">
+      {/* Show agent name if available */}
+      {agent && (
+        <div className="text-xs text-neutral-500 mb-1">
+          Agent: {agent}
         </div>
-      </div>
-    );
-  } else if (shouldShowTimeline) {
-    // First AI message with timeline only (no direct content display)
-    return (
-      <div className="relative break-words flex flex-col w-full">
-        <div className="w-full">
-          <ActivityTimeline 
-            processedEvents={processedEvents}
-            isLoading={isLoading}
-            websiteCount={websiteCount}
-          />
+      )}
+      <div className="flex items-start gap-3">
+        <div className="flex-1">
+          <ReactMarkdown components={mdComponents} remarkPlugins={[remarkGfm]}>
+            {message.content}
+          </ReactMarkdown>
         </div>
-        {/* Only show accumulated content if it's not empty and not from research agents */}
-        {message.content && message.content.trim() && agent !== "interactive_planner_agent" && (
-          <div className="flex items-start gap-3 mt-2">
-            <div className="flex-1">
-              <ReactMarkdown components={mdComponents} remarkPlugins={[remarkGfm]}>
-                {message.content}
-              </ReactMarkdown>
-            </div>
-            <button
-              onClick={() => handleCopy(message.content, message.id)}
-              className="p-1 hover:bg-neutral-700 rounded"
-            >
-              {copiedMessageId === message.id ? (
-                <CopyCheck className="h-4 w-4 text-green-500" />
-              ) : (
-                <Copy className="h-4 w-4 text-neutral-400" />
-              )}
-            </button>
-          </div>
-        )}
+        <button
+          onClick={() => handleCopy(message.content, message.id)}
+          className="p-1 hover:bg-neutral-700 rounded"
+        >
+          {copiedMessageId === message.id ? (
+            <CopyCheck className="h-4 w-4 text-green-500" />
+          ) : (
+            <Copy className="h-4 w-4 text-neutral-400" />
+          )}
+        </button>
       </div>
-    );
-  } else {
-    // Fallback for other messages - just show content
-    return (
-      <div className="relative break-words flex flex-col w-full">
-        <div className="flex items-start gap-3">
-          <div className="flex-1">
-            <ReactMarkdown components={mdComponents} remarkPlugins={[remarkGfm]}>
-              {message.content}
-            </ReactMarkdown>
-          </div>
-          <button
-            onClick={() => handleCopy(message.content, message.id)}
-            className="p-1 hover:bg-neutral-700 rounded"
-          >
-            {copiedMessageId === message.id ? (
-              <CopyCheck className="h-4 w-4 text-green-500" />
-            ) : (
-              <Copy className="h-4 w-4 text-neutral-400" />
-            )}
-          </button>
-        </div>
-      </div>
-    );
-  }
+    </div>
+  );
 };
 
 interface ChatMessagesViewProps {
-  messages: { type: "human" | "ai"; content: string; id: string; agent?: string; finalReportWithCitations?: boolean }[];
+  messages: { type: "human" | "ai"; content: string; id: string; agent?: string; files?: File[] }[];
   isLoading: boolean;
   scrollAreaRef: React.RefObject<HTMLDivElement | null>;
-  onSubmit: (query: string) => void;
+  onSubmit: (query: string, files?: File[]) => void;
   onCancel: () => void;
-  displayData: string | null;
-  messageEvents: Map<string, ProcessedEvent[]>;
-  websiteCount: number;
 }
 
 export function ChatMessagesView({
@@ -298,8 +211,6 @@ export function ChatMessagesView({
   scrollAreaRef,
   onSubmit,
   onCancel,
-  messageEvents,
-  websiteCount,
 }: ChatMessagesViewProps) {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
 
@@ -317,9 +228,8 @@ export function ChatMessagesView({
     window.location.reload();
   };
 
-  // Find the ID of the last AI message
+  // Find the last AI message
   const lastAiMessage = messages.slice().reverse().find(m => m.type === "ai");
-  const lastAiMessageId = lastAiMessage?.id;
 
   return (
     <div className="flex flex-col h-full w-full">
@@ -339,40 +249,27 @@ export function ChatMessagesView({
       <div className="flex-1 flex flex-col w-full">
         <ScrollArea ref={scrollAreaRef} className="flex-1 w-full">
           <div className="p-4 md:p-6 space-y-2 max-w-4xl mx-auto">
-            {messages.map((message) => { // Removed index as it's not directly used for this logic
-              const eventsForMessage = message.type === "ai" ? (messageEvents.get(message.id) || []) : [];
-              
-              // Determine if the current AI message is the last one
-              const isCurrentMessageTheLastAiMessage = message.type === "ai" && message.id === lastAiMessageId;
-
-              return (
-                <div
-                  key={message.id}
-                  className={`flex ${message.type === "human" ? "justify-end" : "justify-start"}`}
-                >
-                  {message.type === "human" ? (
-                    <HumanMessageBubble
-                      message={message}
-                      mdComponents={mdComponents}
-                    />
-                  ) : (
-                    <AiMessageBubble
-                      message={message}
-                      mdComponents={mdComponents}
-                      handleCopy={handleCopy}
-                      copiedMessageId={copiedMessageId}
-                      agent={message.agent}
-                      finalReportWithCitations={message.finalReportWithCitations}
-                      processedEvents={eventsForMessage}
-                      // MODIFIED: Pass websiteCount only if it's the last AI message
-                      websiteCount={isCurrentMessageTheLastAiMessage ? websiteCount : 0}
-                      // MODIFIED: Pass isLoading only if it's the last AI message and global isLoading is true
-                      isLoading={isCurrentMessageTheLastAiMessage && isLoading}
-                    />
-                  )}
-                </div>
-              );
-            })}
+            {messages.map((message) => (
+              <div
+                key={message.id}
+                className={`flex ${message.type === "human" ? "justify-end" : "justify-start"}`}
+              >
+                {message.type === "human" ? (
+                  <HumanMessageBubble
+                    message={message}
+                    mdComponents={mdComponents}
+                  />
+                ) : (
+                  <AiMessageBubble
+                    message={message}
+                    mdComponents={mdComponents}
+                    handleCopy={handleCopy}
+                    copiedMessageId={copiedMessageId}
+                    agent={message.agent}
+                  />
+                )}
+              </div>
+            ))}
             {/* This global "Thinking..." indicator appears below all messages if isLoading is true */}
             {/* It's independent of the per-timeline isLoading state */}
             {isLoading && !lastAiMessage && messages.some(m => m.type === 'human') && (
