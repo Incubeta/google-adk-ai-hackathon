@@ -1,6 +1,6 @@
 import type React from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Loader2, Copy, CopyCheck } from "lucide-react";
+import { Loader2, Copy, CopyCheck, HelpCircle } from "lucide-react";
 import { InputForm } from "@/components/InputForm";
 import { Button } from "@/components/ui/button";
 import { useState, ReactNode } from "react";
@@ -8,6 +8,13 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from 'remark-gfm';
 import { cn } from "@/utils";
 import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { HowItWorks } from "@/components/HowItWorks";
 
 // Markdown component props type from former ReportView
 type MdComponentProps = {
@@ -213,6 +220,7 @@ export function ChatMessagesView({
   onCancel,
 }: ChatMessagesViewProps) {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [showHowItWorks, setShowHowItWorks] = useState(false);
 
   const handleCopy = async (text: string, messageId: string) => {
     try {
@@ -233,17 +241,28 @@ export function ChatMessagesView({
 
   return (
     <div className="flex flex-col h-full w-full">
-      {/* Header with New Chat button */}
+      {/* Header with New Chat and How It Works buttons */}
       <div className="border-b border-neutral-700 p-4 bg-neutral-800">
         <div className="max-w-4xl mx-auto flex justify-between items-center">
           <h1 className="text-lg font-semibold text-neutral-100">Chat</h1>
-          <Button
-            onClick={handleNewChat}
-            variant="outline"
-            className="bg-neutral-700 hover:bg-neutral-600 text-neutral-100 border-neutral-600 hover:border-neutral-500"
-          >
-            New Chat
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              onClick={() => setShowHowItWorks(true)}
+              variant="ghost"
+              className="text-neutral-300 hover:text-neutral-100 hover:bg-neutral-700"
+              size="sm"
+            >
+              <HelpCircle className="w-4 h-4 mr-2" />
+              How It Works
+            </Button>
+            <Button
+              onClick={handleNewChat}
+              variant="outline"
+              className="bg-neutral-700 hover:bg-neutral-600 text-neutral-100 border-neutral-600 hover:border-neutral-500"
+            >
+              New Chat
+            </Button>
+          </div>
         </div>
       </div>
       <div className="flex-1 flex flex-col w-full">
@@ -312,6 +331,16 @@ export function ChatMessagesView({
           )}
         </div>
       </div>
+
+      {/* How It Works Dialog */}
+      <Dialog open={showHowItWorks} onOpenChange={setShowHowItWorks}>
+        <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto bg-neutral-900 border-neutral-700">
+          <DialogHeader>
+            <DialogTitle className="sr-only">How MARES Works</DialogTitle>
+          </DialogHeader>
+          <HowItWorks />
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
