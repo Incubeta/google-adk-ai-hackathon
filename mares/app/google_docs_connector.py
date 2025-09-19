@@ -1,10 +1,14 @@
+import os
 from google.adk.tools.application_integration_tool.application_integration_toolset import (
     ApplicationIntegrationToolset,
 )
 
+GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID")
+GCP_LOCATION = os.getenv("GCP_LOCATION", "europe-west1")
+
 google_docs_toolset = ApplicationIntegrationToolset(
-    project="qwiklabs-gcp-02-fdeb79e5d8e5",
-    location="europe-west1",
+    project=GCP_PROJECT_ID,
+    location=GCP_LOCATION,
     connection="google-docs-connector",
     actions=[
         "GET_v1/documents/%7BdocumentId%7D",
