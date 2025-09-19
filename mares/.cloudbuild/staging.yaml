@@ -16,6 +16,7 @@ steps:
   - name: "python:3.11-slim" 
     id: install-dependencies
     entrypoint: /bin/bash
+    dir: "mares/"
     args:
       - "-c"
       - |
@@ -26,6 +27,7 @@ steps:
   - name: "python:3.11-slim"
     id: deploy-staging
     entrypoint: /bin/bash
+    dir: "mares/"
     args:
       - "-c"
       - |
@@ -42,6 +44,7 @@ steps:
   - name: gcr.io/cloud-builders/gcloud
     id: fetch-auth-token
     entrypoint: /bin/bash
+    dir: "mares/"
     args:
       - "-c"
       - |
@@ -51,6 +54,7 @@ steps:
   - name: "python:3.11-slim"
     id: load_test
     entrypoint: /bin/bash
+    dir: "mares/"
     args:
       - "-c"
       - |
@@ -68,6 +72,7 @@ steps:
   - name: gcr.io/cloud-builders/gcloud
     id: export-results-to-gcs
     entrypoint: /bin/bash
+    dir: "mares/"
     args:
       - "-c"
       - |

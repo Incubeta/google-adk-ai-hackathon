@@ -17,6 +17,7 @@ steps:
   - name: "python:3.11-slim"
     id: install-dependencies
     entrypoint: /bin/bash
+    dir: "mares/"
     args:
       - "-c"
       - |
@@ -28,6 +29,7 @@ steps:
   - name: "python:3.11-slim"
     id: unit-tests
     entrypoint: /bin/bash
+    dir: "mares/"
     args:
       - "-c"
       - |
@@ -39,6 +41,7 @@ steps:
   - name: "python:3.11-slim"
     id: integration-tests
     entrypoint: /bin/bash
+    dir: "mares/"
     args:
       - "-c"
       - |
