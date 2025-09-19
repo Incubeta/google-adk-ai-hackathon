@@ -1,13 +1,10 @@
 import { Card } from "@/components/ui/card";
 import {
-  FileText,
   Sparkles,
-  Code2,
   CheckCircle2,
   ArrowRight,
   Lightbulb,
   Users,
-  Rocket
 } from "lucide-react";
 
 interface HowItWorksProps {

@@ -1,19 +1,11 @@
-# Project name used for resource naming
-project_name = "mares"
-
-# Your Production Google Cloud project id
-prod_project_id = "your-production-project-id"
-
-# Your Staging / Test Google Cloud project id
-staging_project_id = "your-staging-project-id"
-
-# Your Google Cloud project ID that will be used to host the Cloud Build pipelines.
-cicd_runner_project_id = "your-cicd-project-id"
-# Name of the host connection you created in Cloud Build
-host_connection_name = "git-mares"
-
-# Name of the repository you added to Cloud Build
-repository_name = "mares"
-
-# The Google Cloud region you will use to deploy the infrastructure
-region = "us-central1"
+staging_project_id = "glo-tech-in-mares-staging"
+prod_project_id = "glo-tech-in-mares-production"
+cicd_runner_project_id = "glo-tech-in-mares-production"
+region = "europe-west1"
+repository_name = "google-adk-ai-hackathon"
+repository_owner = "Incubeta"
+host_connection_name = "git-google-adk-ai-hackathon"
+create_cb_connection = true
+create_repository = false
+github_app_installation_id = "64198866"
+github_pat_secret_id = "git-google-adk-ai-hackathon-github-oauthtoken-4aee6c"
