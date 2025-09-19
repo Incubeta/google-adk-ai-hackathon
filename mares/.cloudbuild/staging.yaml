@@ -39,6 +39,7 @@ steps:
           --set-env-vars="COMMIT_SHA=${COMMIT_SHA},GCP_PROJECT_ID=${_STAGING_PROJECT_ID}"
     env:
       - 'PATH=/usr/local/bin:/usr/bin:~/.local/bin'
+      - 'GCP_PROJECT_ID=${_STAGING_PROJECT_ID}'
 
 
   - name: gcr.io/cloud-builders/gcloud
