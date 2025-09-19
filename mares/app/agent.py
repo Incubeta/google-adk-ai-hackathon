@@ -69,14 +69,12 @@ class AnalystValidationAgent(BaseAgent):
 
                 yield Event(
                     author=self.name,
-                    content=f"❗ Additional information needed: {
-                    len(questions)} questions"
+                    content=f"❗ Additional information needed: {len(questions)} questions"
                 )
             else:
                 yield Event(
                     author=self.name,
-                    content=f"❌ Error in analyst response: {
-                    response_data.get('error', 'Unknown error')}"
+                    content=f"❌ Error in analyst response: {response_data.get('error', 'Unknown error')}"
                 )
         except json.JSONDecodeError as e:
             yield Event(
@@ -121,7 +119,8 @@ def create_analyst_agent():
         model="gemini-2.5-pro",
         instruction=instruction,
         description="Analyzes project briefs and identifies ambiguities",
-        output_key="missing_elements"  # Saves output to state['missing_elements']
+        # Saves output to state['missing_elements']
+        output_key="missing_elements"
     )
 
 
